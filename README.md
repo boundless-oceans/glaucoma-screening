@@ -20,9 +20,33 @@
 无需上传本地 work、outputs、Git 元数据或本地 Conda 环境。
 代码按 CSV 名称不区分大小写匹配磁盘文件，因此兼容 CSV 的 .jpg 与磁盘的 .JPG。
 
+数据集压缩包和 training 代码可以分开上传，先后顺序不限。压缩包在服务器解压后，
+`--data-root` 指向直接包含 train/valid/test 和三个 CSV 的目录，不是压缩包路径，也不是多套一层的父目录。
+training 不必放在数据目录里。例如数据放在 /root/autodl-tmp/glaucoma_first，代码放在 /root/autodl-tmp/training，
+则在代码目录执行 `python preflight.py --data-root /root/autodl-tmp/glaucoma_first`，训练和预测也传同一个绝对数据路径。
+
 ## 2. 无卡模式先准备
 
-进入服务器终端：
+进入服务器终端，选择以下一种环境准备方式。
+
+### 方式 A：独立 Conda 环境
+
+本目录的 enviroment.yml 是服务器专用：Python 3.12、torch 2.8.0+cu128、torchvision 0.23.0+cu128，
+以及固定版本的 NumPy 和 Pillow。它与父目录的本地 cu126 配置不同。
+无卡模式也可以安装，但必须等有卡开机后才能验证 GPU。
+
+```bash
+cd /root/autodl-tmp/glaucoma_first/training
+conda env create -f enviroment.yml
+conda activate glaucoma-cloud
+python preflight.py --data-root ..
+```
+
+创建后无需再执行 requirements.txt 安装。以后每次新终端或切换到有卡实例后，先激活 `glaucoma-cloud`。
+若 conda activate 提示 shell 未初始化，先执行 `source "$(conda info --base)/etc/profile.d/conda.sh"` 再激活。
+这不会修改镜像原有 base 环境，也不会安装系统显卡驱动。
+
+### 方式 B：沿用镜像现有环境
 
 ```bash
 cd /root/autodl-tmp/glaucoma_first/training
@@ -35,6 +59,7 @@ preflight.py 不加载 PyTorch、不使用 GPU、不训练，只检查 CSV、全
 
 保留镜像自带的 GPU 版 PyTorch。AutoDL 镜像推荐配套为 Python 3.12、torch 2.8.0、torchvision 0.23.0、CUDA 12.8。
 不要使用父目录的 enviroment.yml 覆盖云端环境：该文件是 Windows/4060 的 cu126 配置。
+如果采用方式 A，则使用 training/enviroment.yml，不需要保留同一个 Python 环境中的镜像 PyTorch。
 
 首次训练会下载官方 ResNet18 ImageNet 权重。为避免 GPU 空闲窗口浪费在下载上，可以提前运行：
 
@@ -79,7 +104,7 @@ python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3
 
 ```bash
 mkdir -p logs
-nohup python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3 > logs/baseline.log 2>&1 &
+nohup python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3 >> logs/baseline.log 2>&1 &
 echo $!
 ```
 
@@ -93,6 +118,20 @@ tail -n 30 logs/baseline.log
 等待日志出现保存暂停提示，确认进程退出后再关机。不要同时启动两个进程写同一个 run-dir。
 强制关闭实例或 kill -9 无法触发保存，只能从最近一次已保存的检查点恢复。
 后台日志路径特意放在 logs，不要在首次训练时把重定向日志放进 run-dir。
+
+### 终端输出与日志的区别
+
+- 直接执行 train.py：批次进度和每轮指标输出到终端；每 25 个训练批次和每轮最后一个批次打印一次。
+- 无论是否重定向，每轮验证指标都会追加保存到 run-dir/history.jsonl；最佳指标还保存在 best_metrics.json。
+- history.jsonl 不包含逐批次终端文本。要保存完整控制台输出，使用上面的 nohup 命令；`>>` 在续跑时追加，避免清空旧日志。
+- 若想前台既看终端又保存日志，可运行：
+
+```bash
+mkdir -p logs
+python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3 2>&1 | tee -a logs/baseline.log
+```
+
+tee 是前台方式，不保证断开 SSH 后继续运行。需要断开连接时用 nohup 或自己的 tmux 会话。
 
 ## 4. 输出和提交
 

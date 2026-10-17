@@ -1,0 +1,16 @@
+# AutoDL / Ubuntu 22.04 / NVIDIA RTX 5090 training environment.
+# Keep this filename for consistency with the user's requested spelling.
+# Create on the SERVER: conda env create -f enviroment.yml
+# GPU drivers are provided by the host; no system CUDA Toolkit reinstall needed.
+name: glaucoma-cloud
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.8.0+cu128
+      - torchvision==0.23.0+cu128
+      - numpy==2.2.6
+      - Pillow==11.3.0
