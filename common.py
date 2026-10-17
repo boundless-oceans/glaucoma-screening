@@ -70,7 +70,10 @@ def make_loader(dataset, batch_size, workers, order=None, seed=42):
 
 def atomic_save(state, path):
     temporary = Path(str(path) + ".tmp")
-    torch.save(state, temporary)
+    with temporary.open("wb") as stream:
+        torch.save(state, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary, path)
 
 

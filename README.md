@@ -14,8 +14,97 @@
   train.csv
   valid.csv
   test.csv
-  training/              本目录的所有代码与配置
+/root/autodl-tmp/training/  本目录的所有代码与配置（与数据目录并列）
 ```
+
+## 代码目录职责
+
+```text
+training/
+  scripts/train.sh      训练 Shell 入口
+  scripts/test.sh       评估与预测 Shell 入口
+  launch.py             运行调度和日志捕获
+  train.py              模型训练与断点恢复
+  evaluate.py           加载模型、评估验证集并预测测试集
+  predict.py            仅生成测试集预测的独立入口
+  tests/                数据校验、运行保护和日志代码的自动化测试
+```
+
+evaluate.py 是业务运行入口，会加载权重并调用 GPU；tests/ 是开发测试，不运行模型训练。
+模型评估入口不放进 tests/，避免与 `python -m unittest discover -s tests` 混淆。
+从 training 根目录执行 `bash scripts/train.sh`、`bash scripts/test.sh`；Shell 根据自身位置寻找父目录代码，
+也可从其他目录使用脚本的绝对路径启动。默认数据、模型和日志路径不受当前终端目录影响。
+若手动传入相对的 --config / --run-dir / --checkpoint，它们仍按当前终端目录解释；推荐使用绝对路径。
+
+## 推荐：两个 Shell 入口
+
+上传更新后的整个 training 目录。首次先按下文创建 glaucoma-cloud 环境，之后在服务器运行：
+
+```bash
+cd /root/autodl-tmp/training
+bash scripts/train.sh --smoke
+bash scripts/test.sh --smoke
+```
+
+这两步会实际使用服务器 GPU。小样本训练、验证和预测正常后，正式运行：
+
+```bash
+bash scripts/train.sh --max-hours 3
+bash scripts/test.sh
+```
+
+- train.sh 默认数据路径 /root/autodl-tmp/glaucoma_first，代码路径取脚本所在目录，默认运行目录 training/runs/baseline。
+- 自动激活已创建的 glaucoma-cloud 环境；不会自动安装依赖、申请 GPU 或启动服务器。
+- 训练入口会先检查数据路径，再训练并定期保存。相同命令自动续训，默认 3 小时后保存暂停，`--max-hours 0` 表示不设预算。
+- Shell 训练入口使用 --skip-predict，只负责训练；测试和生成提交由 test.sh 单独执行。
+- test.sh 读取 runs/baseline/best.pt，重新评估 valid 并为 test 生成 submission.csv。至少完成一轮验证，才有 best.pt。
+- 每次测试结果保存在 runs/baseline/evaluations/时间戳/。这里的 submission.csv 才是本次测试产生的正式提交。
+- 测试集无标签，只能报告验证集指标，不会计算测试集准确率或 AUROC。
+- --smoke 使用 runs/smoke；小样本预测叫 DEBUG_predictions.csv，不能用于比赛提交。
+- 可指定 `bash scripts/test.sh --checkpoint /实际路径/best.pt`，默认阈值为 0.5。正式训练配置只从 config.json 读取。
+
+后台运行，断开 SSH 后继续：
+
+```bash
+mkdir -p logs
+nohup bash scripts/train.sh --max-hours 3 >> logs/bootstrap_train.log 2>&1 &
+echo $!
+```
+
+环境激活失败等启动阶段错误在 bootstrap_train.log；Python 启动成功后另有下述独立完整日志。
+需要停止时，对打印的 PID 执行 `kill -TERM 实际PID`，等待保存退出。请勿通过强制断电替代正常停止。
+测试也可用 `nohup bash scripts/test.sh >> logs/bootstrap_test.log 2>&1 &` 后台启动。
+
+### 日志与故障定位
+
+```text
+logs/
+  latest_train.txt                       最近一次训练日志目录的绝对路径
+  latest_test.txt                        最近一次测试日志目录的绝对路径
+  train_时间戳_PID/ 或 test_时间戳_PID/
+    console.log                         带 UTC 时间戳的完整标准输出和错误输出、异常堆栈
+    status.json                         启动时间、PID、当前阶段、退出码和最终状态
+    environment.json                    Python、包版本、GPU 可见设置等
+    requested_config.json               训练时传入的配置文件
+runs/baseline/
+  progress.json                         最近一次成功保存的训练位置、状态和最佳指标
+  last.pt / best.pt                     断点与最佳模型
+```
+
+开始时还会将 nvidia-smi、磁盘空间、内存、Git 提交号输出到 console.log；无法读取某项诊断不会阻止训练。
+每次启动的日志目录不同，旧日志不会清空。Python 使用无缓冲输出和 faulthandler，子进程失败会返回非零退出码。
+查看最新训练日志：
+
+```bash
+tail -f "$(cat logs/latest_train.txt)/console.log"
+cat "$(cat logs/latest_train.txt)/status.json"
+cat runs/baseline/progress.json
+```
+
+status 为 paused 表示正常保存暂停，completed 表示训练已完成，failed 表示错误；具体阶段和堆栈看 console.log。
+若主机掉电、系统直接杀进程或 SIGKILL，来不及写最终状态，status.json 可能停留 running；它不代表进程仍存活。
+此时先确认进程，再核对 progress.json 的最近检查点；异常原因可能需要 AutoDL 平台或系统日志，不能仅靠用户态日志判断。
+日志与检查点写入时尽量及时刷新，但不能保证物理磁盘故障后仍能恢复，重要模型请独立备份。
 
 无需上传本地 work、outputs、Git 元数据或本地 Conda 环境。
 代码按 CSV 名称不区分大小写匹配磁盘文件，因此兼容 CSV 的 .jpg 与磁盘的 .JPG。
@@ -36,10 +125,10 @@ training 不必放在数据目录里。例如数据放在 /root/autodl-tmp/glauc
 无卡模式也可以安装，但必须等有卡开机后才能验证 GPU。
 
 ```bash
-cd /root/autodl-tmp/glaucoma_first/training
+cd /root/autodl-tmp/training
 conda env create -f enviroment.yml
 conda activate glaucoma-cloud
-python preflight.py --data-root ..
+python preflight.py --data-root /root/autodl-tmp/glaucoma_first
 ```
 
 创建后无需再执行 requirements.txt 安装。以后每次新终端或切换到有卡实例后，先激活 `glaucoma-cloud`。
@@ -49,9 +138,9 @@ python preflight.py --data-root ..
 ### 方式 B：沿用镜像现有环境
 
 ```bash
-cd /root/autodl-tmp/glaucoma_first/training
+cd /root/autodl-tmp/training
 python -m pip install -r requirements.txt
-python preflight.py --data-root ..
+python preflight.py --data-root /root/autodl-tmp/glaucoma_first
 ```
 
 preflight.py 不加载 PyTorch、不使用 GPU、不训练，只检查 CSV、全部图片路径、两类标签和年龄参数。
@@ -72,9 +161,9 @@ python -c "from torchvision.models import ResNet18_Weights; ResNet18_Weights.DEF
 ## 3. 有卡开机后检查并训练
 
 ```bash
-cd /root/autodl-tmp/glaucoma_first/training
+cd /root/autodl-tmp/training
 python gpu_check.py
-python -u train.py --data-root .. --config config.smoke.json --run-dir runs/smoke
+python -u train.py --data-root /root/autodl-tmp/glaucoma_first --config config.smoke.json --run-dir runs/smoke
 ```
 
 先跑小样本：256 张训练图、128 张验证图、16 张测试图、1 轮。成功后应生成 runs/smoke/DEBUG_predictions.csv，
@@ -84,7 +173,7 @@ python -u train.py --data-root .. --config config.smoke.json --run-dir runs/smok
 确认小样本运行成功，再启动全量任务：
 
 ```bash
-python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3
+python -u train.py --data-root /root/autodl-tmp/glaucoma_first --run-dir runs/baseline --max-hours 3
 ```
 
 `gpu_check.py` 才会执行一次很小的 GPU 前向/反向测试。无卡模式下报告 GPU 不可用是正常现象。
@@ -104,7 +193,7 @@ python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3
 
 ```bash
 mkdir -p logs
-nohup python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3 >> logs/baseline.log 2>&1 &
+nohup python -u train.py --data-root /root/autodl-tmp/glaucoma_first --run-dir runs/baseline --max-hours 3 >> logs/baseline.log 2>&1 &
 echo $!
 ```
 
@@ -128,7 +217,7 @@ tail -n 30 logs/baseline.log
 
 ```bash
 mkdir -p logs
-python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3 2>&1 | tee -a logs/baseline.log
+python -u train.py --data-root /root/autodl-tmp/glaucoma_first --run-dir runs/baseline --max-hours 3 2>&1 | tee -a logs/baseline.log
 ```
 
 tee 是前台方式，不保证断开 SSH 后继续运行。需要断开连接时用 nohup 或自己的 tmux 会话。
@@ -146,17 +235,18 @@ runs/baseline/
   age_stats.json           只用训练数据拟合的年龄参数
   config.json              本次配置快照
   environment.json         本次运行环境记录
-  submission.csv           完整训练结束后自动生成
+  submission.csv           直接运行 train.py 完整结束且未加 --skip-predict 时生成
   submission.csv.json      预测来源与阈值记录，不需要上传比赛平台
 ```
 
 若时间只够训练几轮，已有 best.pt 后，可以单独生成提交，无需等满 12 轮：
 
 ```bash
-python predict.py --data-root .. --checkpoint runs/baseline/best.pt --output runs/baseline/submission.csv
+python predict.py --data-root /root/autodl-tmp/glaucoma_first --checkpoint runs/baseline/best.pt --output runs/baseline/submission.csv
 ```
 
 暂停不会自动运行测试集推理，以免占用额外 GPU 时间。完整完成后默认自动预测，也可训练时加 `--skip-predict`。
+注意上面是直接运行 train.py 的行为；scripts/train.sh 固定传 --skip-predict，使用 test.sh 在 evaluations/时间戳/ 内生成提交。
 正式数据集的 submission.csv 应有 5855 行数据，列名为 Image_name,Probability,Pred_Label，UTF-8，无额外索引。
 脚本保持 test.csv 原始顺序和名字，拒绝重复名称及无效概率。
 
