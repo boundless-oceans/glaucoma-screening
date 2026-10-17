@@ -1,99 +1,146 @@
-# 青光眼分类训练代码
+# 青光眼图像与年龄融合训练
 
-本目录上传到服务器即可使用。默认方案：ImageNet 预训练 ResNet18 + 年龄 + 年龄缺失标记。
-仅训练 train，valid 只用于验证和选择权重，test 只用于预测。不需要新增人工标注。
-本地现阶段用于编辑代码；不要直接在本机启动完整训练。下列正式训练命令在 AutoDL 终端执行。
+默认模型为 ImageNet 预训练 ResNet18，融合标准化年龄和年龄缺失标记。
+仅 train 参与训练，valid 用于验证和选择权重，test 只做预测，不新增人工标注。
+正式训练在 AutoDL 执行；本地只编辑代码及运行轻量检查。
 
-## 1. 上传目录
-
-```text
-/root/autodl-tmp/glaucoma_first/
-  train/                 原始图片
-  valid/
-  test/
-  train.csv
-  valid.csv
-  test.csv
-/root/autodl-tmp/training/  本目录的所有代码与配置（与数据目录并列）
-```
-
-## 代码目录职责
+## 目录结构
 
 ```text
-training/
-  scripts/train.sh      训练 Shell 入口
-  scripts/test.sh       评估与预测 Shell 入口
-  launch.py             运行调度和日志捕获
-  train.py              模型训练与断点恢复
-  evaluate.py           加载模型、评估验证集并预测测试集
-  predict.py            仅生成测试集预测的独立入口
-  tests/                数据校验、运行保护和日志代码的自动化测试
+/root/autodl-tmp/
+  glaucoma_first/                 数据压缩包解压后的数据根目录
+    train/
+    valid/
+    test/
+    train.csv
+    valid.csv
+    test.csv
+  training/                       代码仓库根目录
+    configs/
+      train.json                  正式训练参数
+      smoke.json                  小样本参数，只覆盖与正式配置不同的项
+    src/glaucoma_training/
+      __init__.py                 项目目录常量，不加载 PyTorch
+      train.py                    训练、验证与断点恢复
+      evaluate.py                 最佳模型验证及测试集预测
+      predict.py                  仅生成测试集预测的独立入口
+      common.py                   模型、Dataset 和推理逻辑
+      data_utils.py               CSV、年龄处理与指标
+      run_utils.py                配置检查、输出保护与进程锁
+      preflight.py                上传后数据路径检查
+      gpu_check.py                GPU 前向/反向检查
+      launch.py                   Shell 调度、日志与状态记录
+    scripts/
+      train.sh                    训练和续训入口
+      test.sh                     模型评估和预测入口
+    tests/                        自动化代码测试，不训练模型
+    enviroment.yml                服务器 Conda 环境
+    requirements.txt              使用现有镜像时补装的依赖
+    README.md
+    .gitignore
+    .gitattributes
+    logs/                         自动生成，不入 Git
+    runs/                         自动生成，不入 Git
 ```
 
-evaluate.py 是业务运行入口，会加载权重并调用 GPU；tests/ 是开发测试，不运行模型训练。
-模型评估入口不放进 tests/，避免与 `python -m unittest discover -s tests` 混淆。
-从 training 根目录执行 `bash scripts/train.sh`、`bash scripts/test.sh`；Shell 根据自身位置寻找父目录代码，
-也可从其他目录使用脚本的绝对路径启动。默认数据、模型和日志路径不受当前终端目录影响。
-若手动传入相对的 --config / --run-dir / --checkpoint，它们仍按当前终端目录解释；推荐使用绝对路径。
+项目根目录保留说明和环境配置；模型超参数放 configs，Python 业务源码放 src。
+evaluate.py 是实际运行模型的入口，不是 tests 中的开发测试。
+数据和代码可以分开上传。--data-root 指向直接包含三个图片目录和三个 CSV 的目录，不能指向压缩包。
+代码按不区分大小写的文件名匹配原图，兼容 CSV 中 .jpg 与磁盘文件 .JPG 的差异。
+请上传完整新目录，不再运行旧版根目录中的 train.py / launch.py，也不要只上传零散文件。
 
-## 推荐：两个 Shell 入口
+## 环境准备
 
-上传更新后的整个 training 目录。首次先按下文创建 glaucoma-cloud 环境，之后在服务器运行：
+无卡模式也可以创建环境；有卡开机后才能验证 CUDA。
 
 ```bash
 cd /root/autodl-tmp/training
+conda env create -f enviroment.yml
+conda activate glaucoma-cloud
+```
+
+配置为 Python 3.12、torch 2.8.0+cu128、torchvision 0.23.0+cu128，固定 NumPy 与 Pillow 版本。
+若激活提示 shell 未初始化，先运行 `source "$(conda info --base)/etc/profile.d/conda.sh"`。
+不要使用本地项目父目录中为 Windows/4060 准备的 cu126 环境。
+若沿用镜像现有 GPU 环境，也可只安装 requirements.txt；Shell 默认使用 glaucoma-cloud，直接 Python 模块命令则使用当前环境。
+
+Shell 会自动设置 PYTHONPATH，无需 pip 安装本项目。需要直接执行 Python 模块时，在代码根目录先执行：
+
+```bash
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python -m glaucoma_training.preflight --data-root /root/autodl-tmp/glaucoma_first
+```
+
+应看到 train=51396、valid=5849、test=5855，所有图片路径匹配。
+preflight 不加载 PyTorch、不调用 GPU，也不完整解码图片，不能代替数据完整性/传输哈希检查。
+首次需要下载官方 ImageNet 权重，可提前在当前环境下载，避免占用 GPU 时段：
+
+```bash
+python -c "from torchvision.models import ResNet18_Weights; ResNet18_Weights.DEFAULT.get_state_dict(progress=True)"
+```
+
+此命令不训练、不调用 GPU。下载失败先解决网络，不要将 pretrained=false 当作正式替代方案。
+
+## 推荐运行顺序
+
+有卡开机后，在代码根目录运行：
+
+```bash
+conda activate glaucoma-cloud
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python -m glaucoma_training.gpu_check
 bash scripts/train.sh --smoke
 bash scripts/test.sh --smoke
 ```
 
-这两步会实际使用服务器 GPU。小样本训练、验证和预测正常后，正式运行：
+小样本使用 256 张训练图、128 张验证图、16 张测试图、1 轮，输出 DEBUG_predictions.csv，不能提交比赛。
+运行正常再开始正式任务：
 
 ```bash
 bash scripts/train.sh --max-hours 3
 bash scripts/test.sh
 ```
 
-- train.sh 默认数据路径 /root/autodl-tmp/glaucoma_first，代码路径取脚本所在目录，默认运行目录 training/runs/baseline。
-- 自动激活已创建的 glaucoma-cloud 环境；不会自动安装依赖、申请 GPU 或启动服务器。
-- 训练入口会先检查数据路径，再训练并定期保存。相同命令自动续训，默认 3 小时后保存暂停，`--max-hours 0` 表示不设预算。
-- Shell 训练入口使用 --skip-predict，只负责训练；测试和生成提交由 test.sh 单独执行。
-- test.sh 读取 runs/baseline/best.pt，重新评估 valid 并为 test 生成 submission.csv。至少完成一轮验证，才有 best.pt。
-- 每次测试结果保存在 runs/baseline/evaluations/时间戳/。这里的 submission.csv 才是本次测试产生的正式提交。
-- 测试集无标签，只能报告验证集指标，不会计算测试集准确率或 AUROC。
-- --smoke 使用 runs/smoke；小样本预测叫 DEBUG_predictions.csv，不能用于比赛提交。
-- 可指定 `bash scripts/test.sh --checkpoint /实际路径/best.pt`，默认阈值为 0.5。正式训练配置只从 config.json 读取。
+- 默认数据路径 /root/autodl-tmp/glaucoma_first，默认模型目录 training/runs/baseline。
+- Shell 从自身位置找到代码和 configs，终端当前目录不影响默认路径；也可以使用脚本绝对路径启动。
+- 手动传入的相对 --config、--run-dir、--checkpoint 仍相对于终端当前目录，推荐传绝对路径。
+- train.sh 调用 launch，再启动训练模块；同一命令自动恢复 last.pt，不重复开始。
+- train.sh 固定跳过训练后的测试集推理；test.sh 单独加载 best.pt，评估 valid 并生成 test 的预测。
+- 至少完成一轮验证才会有 best.pt，未生成时测试入口会明确报错。
+- --smoke 对应 configs/smoke.json 和 runs/smoke；正式配置为 configs/train.json。
+- 可用 `bash scripts/train.sh --config /配置绝对路径.json --run-dir /新实验绝对路径` 建立独立实验，不能同时传 --smoke。
+- 测试其他权重：`bash scripts/test.sh --checkpoint /权重绝对路径/best.pt`。
 
-后台运行，断开 SSH 后继续：
+脚本自动激活已创建的 glaucoma-cloud；不会安装环境、申请 GPU、自动开关机或等待空闲 GPU。
+--max-hours 默认 3，设为 0 表示不设预算。计时不含初始下载、初始化和测试；验证会完整结束，因此不是严格的关机定时器。
+需要让出 GPU 时，前台按一次 Ctrl+C，或向后台 PID 发送 SIGTERM，等待保存提示后再关机。
+
+## 后台运行与日志
 
 ```bash
+cd /root/autodl-tmp/training
 mkdir -p logs
 nohup bash scripts/train.sh --max-hours 3 >> logs/bootstrap_train.log 2>&1 &
 echo $!
 ```
 
-环境激活失败等启动阶段错误在 bootstrap_train.log；Python 启动成功后另有下述独立完整日志。
-需要停止时，对打印的 PID 执行 `kill -TERM 实际PID`，等待保存退出。请勿通过强制断电替代正常停止。
-测试也可用 `nohup bash scripts/test.sh >> logs/bootstrap_test.log 2>&1 &` 后台启动。
-
-### 日志与故障定位
+记住打印出的 PID；后台测试可用 `nohup bash scripts/test.sh >> logs/bootstrap_test.log 2>&1 &`。
+bootstrap 日志记录 Conda 激活等早期失败；Python 成功启动后，会另建独立日志：
 
 ```text
 logs/
-  latest_train.txt                       最近一次训练日志目录的绝对路径
-  latest_test.txt                        最近一次测试日志目录的绝对路径
-  train_时间戳_PID/ 或 test_时间戳_PID/
-    console.log                         带 UTC 时间戳的完整标准输出和错误输出、异常堆栈
-    status.json                         启动时间、PID、当前阶段、退出码和最终状态
-    environment.json                    Python、包版本、GPU 可见设置等
-    requested_config.json               训练时传入的配置文件
-runs/baseline/
-  progress.json                         最近一次成功保存的训练位置、状态和最佳指标
-  last.pt / best.pt                     断点与最佳模型
+  latest_train.txt                 最近一次训练日志目录绝对路径
+  latest_test.txt                  最近一次评估日志目录绝对路径
+  train_UTC时间戳_PID/ 或 test_UTC时间戳_PID/
+    console.log                    带时间戳的完整标准输出、错误输出、异常堆栈
+    status.json                    PID、运行阶段、开始/结束时间、退出码和状态
+    environment.json               Python、依赖版本、GPU 可见设置
+    requested_config.json          训练传入的配置原文
 ```
 
-开始时还会将 nvidia-smi、磁盘空间、内存、Git 提交号输出到 console.log；无法读取某项诊断不会阻止训练。
-每次启动的日志目录不同，旧日志不会清空。Python 使用无缓冲输出和 faulthandler，子进程失败会返回非零退出码。
-查看最新训练日志：
+启动时会把 Git 提交号、nvidia-smi、磁盘空间和内存情况写入 console.log。
+每次启动独立目录，旧日志不会覆盖；子进程失败会返回非零退出码，Python 启用无缓冲和 faulthandler。
+查看最新日志和状态：
 
 ```bash
 tail -f "$(cat logs/latest_train.txt)/console.log"
@@ -101,193 +148,66 @@ cat "$(cat logs/latest_train.txt)/status.json"
 cat runs/baseline/progress.json
 ```
 
-status 为 paused 表示正常保存暂停，completed 表示训练已完成，failed 表示错误；具体阶段和堆栈看 console.log。
-若主机掉电、系统直接杀进程或 SIGKILL，来不及写最终状态，status.json 可能停留 running；它不代表进程仍存活。
-此时先确认进程，再核对 progress.json 的最近检查点；异常原因可能需要 AutoDL 平台或系统日志，不能仅靠用户态日志判断。
-日志与检查点写入时尽量及时刷新，但不能保证物理磁盘故障后仍能恢复，重要模型请独立备份。
+每 25 个训练批次及每轮最后一批会打印进度、loss 和学习率，每轮结束打印验证指标。
+每次检查点保存会打印保存位置；history.jsonl 另存每轮指标，不包含全部控制台文本。
+paused 是正常保存暂停，completed 表示完成，failed 表示出错。状态卡在 running 不代表进程一定存活：
+SIGKILL、系统 OOM 或主机掉电时来不及写最终状态，需要结合进程、最后日志、progress 和平台系统日志排查。
+日志和权重写入时尽量刷新，但不能保证物理磁盘故障后可恢复，重要权重请另行备份。
 
-无需上传本地 work、outputs、Git 元数据或本地 Conda 环境。
-代码按 CSV 名称不区分大小写匹配磁盘文件，因此兼容 CSV 的 .jpg 与磁盘的 .JPG。
-
-数据集压缩包和 training 代码可以分开上传，先后顺序不限。压缩包在服务器解压后，
-`--data-root` 指向直接包含 train/valid/test 和三个 CSV 的目录，不是压缩包路径，也不是多套一层的父目录。
-training 不必放在数据目录里。例如数据放在 /root/autodl-tmp/glaucoma_first，代码放在 /root/autodl-tmp/training，
-则在代码目录执行 `python preflight.py --data-root /root/autodl-tmp/glaucoma_first`，训练和预测也传同一个绝对数据路径。
-
-## 2. 无卡模式先准备
-
-进入服务器终端，选择以下一种环境准备方式。
-
-### 方式 A：独立 Conda 环境
-
-本目录的 enviroment.yml 是服务器专用：Python 3.12、torch 2.8.0+cu128、torchvision 0.23.0+cu128，
-以及固定版本的 NumPy 和 Pillow。它与父目录的本地 cu126 配置不同。
-无卡模式也可以安装，但必须等有卡开机后才能验证 GPU。
-
-```bash
-cd /root/autodl-tmp/training
-conda env create -f enviroment.yml
-conda activate glaucoma-cloud
-python preflight.py --data-root /root/autodl-tmp/glaucoma_first
-```
-
-创建后无需再执行 requirements.txt 安装。以后每次新终端或切换到有卡实例后，先激活 `glaucoma-cloud`。
-若 conda activate 提示 shell 未初始化，先执行 `source "$(conda info --base)/etc/profile.d/conda.sh"` 再激活。
-这不会修改镜像原有 base 环境，也不会安装系统显卡驱动。
-
-### 方式 B：沿用镜像现有环境
-
-```bash
-cd /root/autodl-tmp/training
-python -m pip install -r requirements.txt
-python preflight.py --data-root /root/autodl-tmp/glaucoma_first
-```
-
-preflight.py 不加载 PyTorch、不使用 GPU、不训练，只检查 CSV、全部图片路径、两类标签和年龄参数。
-上传后应看到 train=51396、valid=5849、test=5855；这里只核对路径，不能替代原始数据完整解码或上传文件哈希校验。
-
-保留镜像自带的 GPU 版 PyTorch。AutoDL 镜像推荐配套为 Python 3.12、torch 2.8.0、torchvision 0.23.0、CUDA 12.8。
-不要使用父目录的 enviroment.yml 覆盖云端环境：该文件是 Windows/4060 的 cu126 配置。
-如果采用方式 A，则使用 training/enviroment.yml，不需要保留同一个 Python 环境中的镜像 PyTorch。
-
-首次训练会下载官方 ResNet18 ImageNet 权重。为避免 GPU 空闲窗口浪费在下载上，可以提前运行：
-
-```bash
-python -c "from torchvision.models import ResNet18_Weights; ResNet18_Weights.DEFAULT.get_state_dict(progress=True)"
-```
-
-此命令只下载权重，不训练、不调用 GPU。如下载失败，先解决网络，不能将 pretrained 改为 false 后当作正式预训练方案继续。
-
-## 3. 有卡开机后检查并训练
-
-```bash
-cd /root/autodl-tmp/training
-python gpu_check.py
-python -u train.py --data-root /root/autodl-tmp/glaucoma_first --config config.smoke.json --run-dir runs/smoke
-```
-
-先跑小样本：256 张训练图、128 张验证图、16 张测试图、1 轮。成功后应生成 runs/smoke/DEBUG_predictions.csv，
-只用于确认环境和流程，不能提交比赛，也不能用其指标判断最终效果。
-这一条会实际使用服务器 GPU；本地不会自行启动训练。
-
-确认小样本运行成功，再启动全量任务：
-
-```bash
-python -u train.py --data-root /root/autodl-tmp/glaucoma_first --run-dir runs/baseline --max-hours 3
-```
-
-`gpu_check.py` 才会执行一次很小的 GPU 前向/反向测试。无卡模式下报告 GPU 不可用是正常现象。
-
-`--max-hours 3` 表示本次最多进行约 3 小时的训练/验证阶段，然后保存暂停；可按分配到的时长修改。
-计时从模型、数据加载初始化之后开始，不含依赖安装、首次下载和结束后的测试集推理；验证阶段会完整结束，因此不是严格的实例关机定时器。
-脚本不会关机、抢占 GPU、定时自动启动或申请平台资源。你需要在使用权到期前预留保存时间并主动停止/关机。
-
-下一次执行相同命令，自动读取 runs/baseline/last.pt 接续。配置和 CSV 必须保持不变。
-默认每 200 个训练批次、每轮训练结束前、每轮验证结束后保存一次；正常暂停会额外保存。
-第一批训练前也会保存初始 last.pt，避免首次中断后仅留下配置文件而无法重新启动。
-同一个运行目录由 .run.lock 文件的操作系统锁保护，锁文件保留是正常现象；进程退出会释放锁，不要手动删除锁文件来并发训练。
-恢复训练时应一起保留 last.pt 和已有的 best.pt；最佳模型丢失会明确报错，避免训练结束后才发现无法预测。
-每轮 12 个 epoch 是整个训练任务总量，续跑不会重新开始计数。
-
-### 后台运行（可选）
-
-```bash
-mkdir -p logs
-nohup python -u train.py --data-root /root/autodl-tmp/glaucoma_first --run-dir runs/baseline --max-hours 3 >> logs/baseline.log 2>&1 &
-echo $!
-```
-
-记下打印出的进程 PID。查看进度：
-
-```bash
-tail -n 30 logs/baseline.log
-```
-
-需要让出 GPU 时，前台运行按一次 Ctrl+C；后台运行用 `kill -TERM 实际PID`。
-等待日志出现保存暂停提示，确认进程退出后再关机。不要同时启动两个进程写同一个 run-dir。
-强制关闭实例或 kill -9 无法触发保存，只能从最近一次已保存的检查点恢复。
-后台日志路径特意放在 logs，不要在首次训练时把重定向日志放进 run-dir。
-
-### 终端输出与日志的区别
-
-- 直接执行 train.py：批次进度和每轮指标输出到终端；每 25 个训练批次和每轮最后一个批次打印一次。
-- 无论是否重定向，每轮验证指标都会追加保存到 run-dir/history.jsonl；最佳指标还保存在 best_metrics.json。
-- history.jsonl 不包含逐批次终端文本。要保存完整控制台输出，使用上面的 nohup 命令；`>>` 在续跑时追加，避免清空旧日志。
-- 若想前台既看终端又保存日志，可运行：
-
-```bash
-mkdir -p logs
-python -u train.py --data-root /root/autodl-tmp/glaucoma_first --run-dir runs/baseline --max-hours 3 2>&1 | tee -a logs/baseline.log
-```
-
-tee 是前台方式，不保证断开 SSH 后继续运行。需要断开连接时用 nohup 或自己的 tmux 会话。
-
-## 4. 输出和提交
+## 检查点与预测结果
 
 ```text
 runs/baseline/
-  last.pt                  续训用，含优化器等状态，体积较大
-  best.pt                  最佳验证模型，预测使用这个
-  best_metrics.json        最佳验证指标
-  valid_predictions.csv    最佳模型对验证集的预测
-  valid_thresholds.csv     阈值 0.01～0.99 的验证表现
-  history.jsonl            每轮验证日志
-  age_stats.json           只用训练数据拟合的年龄参数
-  config.json              本次配置快照
-  environment.json         本次运行环境记录
-  submission.csv           直接运行 train.py 完整结束且未加 --skip-predict 时生成
-  submission.csv.json      预测来源与阈值记录，不需要上传比赛平台
+  last.pt                         续训状态：模型、优化器、AMP、随机状态、下一批位置
+  best.pt                         最佳验证模型参数
+  progress.json                   最近一次成功保存的状态与位置
+  config.json                     本次生效配置快照（运行产物，不是源码配置）
+  environment.json / age_stats.json
+  history.jsonl / best_metrics.json
+  valid_predictions.csv / valid_thresholds.csv
+  evaluations/UTC时间戳_PID/
+    validation_metrics.json       重新验证的指标
+    validation_predictions.csv    验证预测与真实标签
+    checkpoint_info.json          所用权重 SHA256、环境、配置及完成状态
+    submission.csv                本次正式预测结果
 ```
 
-若时间只够训练几轮，已有 best.pt 后，可以单独生成提交，无需等满 12 轮：
+正式提交使用 test.sh 打印出的 evaluations 目录中的 submission.csv。
+完整数据应有 5855 行记录，列为 Image_name,Probability,Pred_Label，UTF-8，无索引，保持 test.csv 原始顺序和名称。
+测试集没有真实标签，不能计算测试集 AUROC/准确率；评估入口只报告 valid 的指标。
+小样本权重默认不能生成正式提交，--smoke 输出 DEBUG_predictions.csv。
+默认标签阈值 0.5，概率始终是 sigmoid 输出。FAQ 与官网对评分输入有冲突，核实前不自动优化提交阈值；
+确认可调后可传 `bash scripts/test.sh --threshold 0.3`，应只依据验证集作决定。
+选模主要看概率 AUROC，完全相等时比较梯形 AUPRC；同时记录 Average Precision，两者定义不同。
+valid_thresholds.csv 记录 0.01～0.99 的验证阈值表现和 hard_label_auroc。不要把阈值搜索后的值当作独立泛化证明。
+
+第一次训练前即保存初始 last.pt，此后每 200 批、训练阶段结束前、验证结束后和正常停止时保存。
+正常暂停从下一批继续，强制停止只能恢复到最近一次已保存的批次。续训保持配置、CSV 和原图不变，
+保留 last.pt 和 best.pt；最佳模型丢失会报错。不要删除 .run.lock 来并发启动同一实验，进程退出会释放系统锁。
+相同配置的旧 state_dict 检查点仍可使用；移动目录不改变模型结构和权重键名。
+
+## 训练方案与验证范围
+
+configs/train.json 默认：320×320，batch=32，4 个读取进程，12 轮，AdamW，学习率 1e-4，混合精度。
+图像等比例缩放补边，训练时 50% 水平翻转、±10° 旋转、轻微亮度/对比度增强；验证与预测不随机增强。
+年龄空值、非有限值、<=0 或 >110 视为缺失，用训练数据中位数填补；均值和标准差仅从训练数据计算。
+图像特征与年龄、缺失标记拼接分类，默认 BCE pos_weight=1，不同时叠加多种不平衡处理。
+显存不足时在新实验配置中减小 batch_size；内存/数据加载问题可减小 num_workers。
+pretrained=false 和非零样本 limit 只用于流程调试。配置改变请建新实验目录，不要混用检查点。
+原图解码可能成为性能瓶颈，跑通后再按 GPU 利用率决定是否建立缩放缓存。
+
+仅此前在 CPU 合成小样例上验证过训练/恢复流程；目录迁移后做轻量测试和路径检查，未在本地启动训练，未在 5090 实测。
+数据顺序与增强按 seed、epoch、图片索引固定，跨 GPU/驱动/PyTorch 版本不保证逐位相同。
+最终仍需官方 PyTorch 2.10.0/torchvision 0.25.0、T4 16GB 环境核验，单图端到端 <=100ms 和模型 <=500MB 尚未实测。
+仅加载自己生成的可信权重。复赛按届时清单打包，不能把 last.pt 等整个 runs 目录直接当作提交模型包。
+
+## 代码测试与版本控制
+
+本地在 training 根目录执行以下轻量测试，不会训练模型：
 
 ```bash
-python predict.py --data-root /root/autodl-tmp/glaucoma_first --checkpoint runs/baseline/best.pt --output runs/baseline/submission.csv
+python -B -m unittest discover -s tests -v
 ```
 
-暂停不会自动运行测试集推理，以免占用额外 GPU 时间。完整完成后默认自动预测，也可训练时加 `--skip-predict`。
-注意上面是直接运行 train.py 的行为；scripts/train.sh 固定传 --skip-predict，使用 test.sh 在 evaluations/时间戳/ 内生成提交。
-正式数据集的 submission.csv 应有 5855 行数据，列名为 Image_name,Probability,Pred_Label，UTF-8，无额外索引。
-脚本保持 test.csv 原始顺序和名字，拒绝重复名称及无效概率。
-
-默认 Pred_Label 使用 0.5 阈值。FAQ 与官网对实际评分输入有冲突，应核实后再决定是否调阈值。
-确认可以自选阈值后，才可在独立预测命令加入 `--threshold 0.3` 等参数；不能参考测试集反馈反复挑阈值。
-Probability 始终为模型 sigmoid 输出，不按阈值改写。
-AUROC 为主要选模指标，完全相等时比较梯形 AUPRC；同时记录 Average Precision，二者定义不同。
-valid_thresholds.csv 另有 hard_label_auroc，便于理解按硬标签评估时的表现。不要把阈值搜索后的验证值当作独立泛化证明。
-
-## 5. 默认训练配置及修改方式
-
-config.json 默认：320×320、batch size 32、4 个读取进程、12 轮、AdamW、初始学习率 1e-4、混合精度。
-全模型微调；轻度水平翻转、旋转和亮度/对比度增强；等比例缩放补黑边，不做随机裁剪。
-年龄 <=0、>110、空值或非有限值作为缺失；中位数填补、均值和标准差只从训练数据计算。
-图像特征与标准化年龄及缺失标记直接融合分类。训练损失默认普通 BCE，pos_weight=1，不自动把正负权重设成约 30 倍。
-
-如显存不足，可在首次训练前减小 batch_size。进程过多或内存不足则降低 num_workers。
-改变已有训练的配置会被拒绝，避免悄悄改变续训实验；新方案请复制配置并指定新的 --config 和 --run-dir。
-不要移动、替换或修改一个正在续训任务的原始图片。CSV 校验并不能检查图片内容是否被替换。
-
-train_limit/valid_limit/test_limit=0 表示全量。非零仅用于调试，标签采样会尽量保留两类。
-调试运行仅输出 DEBUG_predictions.csv；独立 predict.py 拒绝使用带样本限制的检查点生成正式提交。
-pretrained=false 仅适合离线流程测试，不是正式推荐配置。
-
-## 6. 可复现与范围
-
-检查点保存优化器、混合精度状态、随机状态、当前 epoch 和下一个批次位置。
-数据顺序和增强根据 seed、epoch、图片索引确定。CPU 小样例验证了中途恢复与连续运行日志一致；跨 GPU、驱动或 PyTorch 版本不保证逐位相同。
-恢复采用普通 state_dict，不依赖整模型 pickle；只加载本项目自己产生且可信的检查点。
-
-训练仅在本机 CPU 临时合成数据上做了流程测试，未在本机训练真实竞赛数据，也未完成 5090 GPU 验证。
-默认参数是起点，不保证分数。原始大图解码可能成为瓶颈，正式运行后根据日志和 GPU 利用率再决定是否建立缩放缓存。
-比赛最终需要在官方 PyTorch 2.10.0/torchvision 0.25.0、T4 16GB 环境验证，单图端到端 <=100ms、模型总大小 <=500MB 还未实测。
-best.pt 是模型参数检查点；last.pt 是续训产物。复赛应按届时官方清单打包，不要直接把整个 runs 目录当作提交模型包。
-请把 best.pt、last.pt 和日志备份到自己的存储；数据和模型不要提交到公开 Git 仓库。
-
-## 7. 本地 Git
-
-Git 仓库仅建立在 training 目录内，只跟踪本目录的代码、配置和说明，忽略权重、运行日志和临时文件。
-父目录 E:\glaucoma_first 不建立 Git 仓库，数据集、数据检查脚本和报告均在本仓库范围之外。
-先进入 training 目录，再执行 Git 命令。
-查看版本：`git log --oneline`；查看修改：`git diff`。
-要取回旧版某个代码文件，先保存当前修改，再用 `git restore --source 提交号 -- 文件名`。
-不必上传 .git 到服务器；如果通过 Git 同步代码，数据和权重仍需单独私密传输。
+Git 仅位于 training/.git；数据、logs、runs、缓存均不入库。提交信息用 `关键词: 改动总结`，分支用 `关键词/用途`。
+模型与私有数据不要公开上传，服务器不必携带 .git；需要 Git 记录诊断时再同步私有代码仓库。
