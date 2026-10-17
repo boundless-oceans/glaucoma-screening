@@ -1,0 +1,13 @@
+/runs/
+/logs/
+__pycache__/
+*.py[cod]
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.log
+*.tmp
+.venv/
+.env
+.env.*

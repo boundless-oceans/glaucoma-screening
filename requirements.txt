@@ -1,0 +1,4 @@
+# Keep the GPU-enabled torch/torchvision supplied by the AutoDL image.
+# Tested API target: torch 2.8.0 + torchvision 0.23.0, Python 3.12.
+numpy>=1.26,<3
+Pillow>=10.4,<13
