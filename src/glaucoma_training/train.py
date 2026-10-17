@@ -13,18 +13,19 @@ from pathlib import Path
 import torch
 import torchvision
 from torch import nn
+from . import CONFIG_DIR, DEFAULT_DATA_ROOT, PROJECT_ROOT
 
-from common import (FusionModel, FundusDataset, atomic_save, data_signature, evaluate,
+from .common import (FusionModel, FundusDataset, atomic_save, data_signature, evaluate,
                     fit_age, json_save, make_loader, metrics, predict_checkpoint,
                     read_rows, subset, write_predictions)
-from run_utils import RunLock, protect_output, validate_config
+from .run_utils import RunLock, protect_output, validate_config
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parent.parent)
-    parser.add_argument("--run-dir", type=Path, default=Path(__file__).resolve().parent / "runs" / "baseline")
-    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent / "config.json")
+    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--run-dir", type=Path, default=PROJECT_ROOT / "runs" / "baseline")
+    parser.add_argument("--config", type=Path, default=CONFIG_DIR / "train.json")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--max-hours", type=float, default=0, help="Per invocation training budget; 0 means no limit")
     parser.add_argument("--resume", choices=["auto", "never"], default="auto")
@@ -33,7 +34,7 @@ def main():
     if not math.isfinite(args.max_hours) or args.max_hours < 0:
         parser.error("--max-hours must be finite and nonnegative")
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
-    defaults = json.loads((Path(__file__).parent / "config.json").read_text(encoding="utf-8-sig"))
+    defaults = json.loads((CONFIG_DIR / "train.json").read_text(encoding="utf-8-sig"))
     unknown = set(config) - set(defaults)
     if unknown:
         parser.error(f"Unknown configuration keys: {unknown}")

@@ -8,9 +8,9 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from data_utils import age_value, fit_age, metrics, read_rows, subset, write_predictions
-from run_utils import RunLock, protect_output, validate_config
+sys.path.insert(0, str(ROOT / "src"))
+from glaucoma_training.data_utils import age_value, fit_age, metrics, read_rows, subset, write_predictions
+from glaucoma_training.run_utils import RunLock, protect_output, validate_config
 
 
 class DataChecks(unittest.TestCase):
@@ -81,7 +81,7 @@ class DataChecks(unittest.TestCase):
         self.assertEqual({r["True_Label"] for r in selected}, {"0", "1"})
 
     def test_config(self):
-        config = json.loads((ROOT / "config.json").read_text())
+        config = json.loads((ROOT / "configs" / "train.json").read_text())
         validate_config(config)
         for key, value in (("amp", "false"), ("learning_rate", math.nan), ("batch_size", True),
                            ("seed", -1), ("weight_decay", -1)):

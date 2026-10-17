@@ -6,8 +6,8 @@ import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from launch import LoggedSession, write_status
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from glaucoma_training.launch import LoggedSession, write_status
 
 
 class LoggingChecks(unittest.TestCase):

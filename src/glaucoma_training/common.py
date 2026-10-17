@@ -9,8 +9,8 @@ from torch import nn
 from torch.utils.data import Dataset, DataLoader
 from torchvision.models import resnet18, ResNet18_Weights
 from torchvision.transforms.functional import to_tensor, normalize
-from run_utils import protect_output
-from data_utils import (read_rows, age_value, fit_age, subset, metrics,
+from .run_utils import protect_output
+from .data_utils import (read_rows, age_value, fit_age, subset, metrics,
                         write_predictions, data_signature, json_save)
 
 

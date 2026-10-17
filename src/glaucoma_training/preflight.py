@@ -3,16 +3,17 @@ import argparse
 import json
 from pathlib import Path
 
-from data_utils import age_value, fit_age, read_rows
-from run_utils import validate_config
+from .data_utils import age_value, fit_age, read_rows
+from .run_utils import validate_config
+from . import CONFIG_DIR, DEFAULT_DATA_ROOT
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parent.parent)
-    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent / "config.json")
+    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--config", type=Path, default=CONFIG_DIR / "train.json")
     args = parser.parse_args()
-    defaults = json.loads((Path(__file__).parent / "config.json").read_text(encoding="utf-8-sig"))
+    defaults = json.loads((CONFIG_DIR / "train.json").read_text(encoding="utf-8-sig"))
     overrides = json.loads(args.config.read_text(encoding="utf-8-sig"))
     if set(overrides) - set(defaults):
         raise ValueError("Unknown config keys")

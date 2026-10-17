@@ -11,8 +11,9 @@ import signal
 import subprocess
 import sys
 import traceback
+from . import CONFIG_DIR, DEFAULT_DATA_ROOT, PROJECT_ROOT
 
-CODE = Path(__file__).resolve().parent
+CODE = PROJECT_ROOT
 
 
 def utc_now():
@@ -52,7 +53,8 @@ class LoggedSession:
         if self.interrupted:
             raise InterruptedError("Stop requested before the next stage")
         self.log(f"START {name}: {json.dumps([str(x) for x in command])}")
-        environment = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONFAULTHANDLER": "1"}
+        environment = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONFAULTHANDLER": "1",
+                       "PYTHONPATH": str(CODE / "src") + os.pathsep + os.environ.get("PYTHONPATH", "")}
         try:
             if timeout is not None:
                 result = subprocess.run(command, cwd=CODE, env=environment, stdout=subprocess.PIPE,
@@ -87,7 +89,7 @@ class LoggedSession:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=["train", "test"])
-    parser.add_argument("--data-root", type=Path, default=Path("/root/autodl-tmp/glaucoma_first"))
+    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--max-hours", type=float, default=3)
@@ -107,7 +109,7 @@ def main():
         parser.error("Choose --smoke OR --config")
     root = args.data_root.resolve()
     run = (args.run_dir or CODE / "runs" / ("smoke" if args.smoke else "baseline")).resolve()
-    config = (args.config or CODE / ("config.smoke.json" if args.smoke else "config.json")).resolve()
+    config = (args.config or CONFIG_DIR / ("smoke.json" if args.smoke else "train.json")).resolve()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + f"_{os.getpid()}"
     session = LoggedSession(CODE / "logs" / f"{args.mode}_{stamp}")
     status_path = session.directory / "status.json"
@@ -140,10 +142,10 @@ def main():
             state["stage"] = "preflight"
             write_status(status_path, state)
             (session.directory / "requested_config.json").write_bytes(config.read_bytes())
-            session.run("preflight", [sys.executable, "-u", "preflight.py", "--data-root", str(root), "--config", str(config)])
+            session.run("preflight", [sys.executable, "-u", "-m", "glaucoma_training.preflight", "--data-root", str(root), "--config", str(config)])
             state["stage"] = "training"
             write_status(status_path, state)
-            session.run("training", [sys.executable, "-u", "-X", "faulthandler", "train.py",
+            session.run("training", [sys.executable, "-u", "-X", "faulthandler", "-m", "glaucoma_training.train",
                         "--data-root", str(root), "--run-dir", str(run), "--config", str(config),
                         "--max-hours", str(args.max_hours), "--skip-predict"])
             progress_path = run / "progress.json"
@@ -160,7 +162,7 @@ def main():
             checkpoint = (args.checkpoint or run / "best.pt").resolve()
             state["checkpoint"] = str(checkpoint)
             write_status(status_path, state)
-            command = [sys.executable, "-u", "-X", "faulthandler", "evaluate.py", "--data-root", str(root),
+            command = [sys.executable, "-u", "-X", "faulthandler", "-m", "glaucoma_training.evaluate", "--data-root", str(root),
                        "--checkpoint", str(checkpoint), "--output-dir", str(output), "--threshold", str(args.threshold),
                        "--batch-size", str(args.batch_size), "--workers", str(args.workers)]
             if args.smoke:

@@ -2,12 +2,13 @@
 import argparse
 from pathlib import Path
 
-from common import predict_checkpoint
+from .common import predict_checkpoint
+from . import DEFAULT_DATA_ROOT
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")

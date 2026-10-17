@@ -7,9 +7,9 @@ from pathlib import Path
 
 import torch
 
-from common import FusionModel, FundusDataset, evaluate, make_loader
-from data_utils import data_signature, json_save, metrics, read_rows, subset, write_predictions
-from run_utils import protect_output
+from .common import FusionModel, FundusDataset, evaluate, make_loader
+from .data_utils import data_signature, json_save, metrics, read_rows, subset, write_predictions
+from .run_utils import protect_output
 
 
 def main():
