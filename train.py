@@ -16,6 +16,7 @@ from torch import nn
 from common import (FusionModel, FundusDataset, atomic_save, data_signature, evaluate,
                     fit_age, json_save, make_loader, metrics, predict_checkpoint,
                     read_rows, subset, write_predictions)
+from run_utils import RunLock, protect_output, validate_config
 
 
 def main():
@@ -28,24 +29,18 @@ def main():
     parser.add_argument("--resume", choices=["auto", "never"], default="auto")
     parser.add_argument("--skip-predict", action="store_true")
     args = parser.parse_args()
-    if args.max_hours < 0:
-        parser.error("--max-hours cannot be negative")
+    if not math.isfinite(args.max_hours) or args.max_hours < 0:
+        parser.error("--max-hours must be finite and nonnegative")
     config = json.loads(args.config.read_text(encoding="utf-8-sig"))
     defaults = json.loads((Path(__file__).parent / "config.json").read_text(encoding="utf-8-sig"))
     unknown = set(config) - set(defaults)
     if unknown:
         parser.error(f"Unknown configuration keys: {unknown}")
     config = {**defaults, **config}
-    for key in ("image_size", "batch_size", "epochs", "save_every_steps", "cpu_threads"):
-        if not isinstance(config[key], int) or isinstance(config[key], bool) or config[key] <= 0:
-            parser.error(f"{key} must be a positive integer")
-    for key in ("num_workers", "train_limit", "valid_limit", "test_limit"):
-        if not isinstance(config[key], int) or isinstance(config[key], bool) or config[key] < 0:
-            parser.error(f"{key} must be a nonnegative integer")
-    if config["image_size"] < 64:
-        parser.error("image_size must be >= 64")
-    if config["learning_rate"] <= 0 or config["weight_decay"] < 0 or config["pos_weight"] <= 0:
-        parser.error("Invalid learning_rate / weight_decay / pos_weight")
+    try:
+        validate_config(config)
+    except ValueError as error:
+        parser.error(str(error))
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         parser.error("CUDA is unavailable. Use a GPU instance, or --device cpu for a small debug run.")
@@ -55,21 +50,26 @@ def main():
         torch.cuda.manual_seed_all(config["seed"])
         torch.backends.cudnn.benchmark = False
     root, run = args.data_root.resolve(), args.run_dir.resolve()
-    # Prevent accidental training outputs inside source image folders.
-    for split in ("train", "valid", "test"):
-        source = root / split
-        if run == source or source in run.parents:
-            parser.error("--run-dir must be outside train/valid/test image folders")
+    try:
+        protect_output(root, run, directory=True)
+    except ValueError as error:
+        parser.error(str(error))
     run.mkdir(parents=True, exist_ok=True)
+    run_lock = RunLock(run)
     last = run / "last.pt"
-    if args.resume == "never" and any(run.iterdir()):
+    existing = {p.name for p in run.iterdir()} - {".run.lock"}
+    if args.resume == "never" and existing:
         parser.error("Use an empty --run-dir for --resume never")
-    if not last.exists() and any(run.iterdir()):
+    if not last.exists() and existing - {"last.pt.tmp"}:
         parser.error("Run directory has files but no last.pt. Choose a new --run-dir.")
     signature = data_signature(root)
     full_train = read_rows(root, "train")
     train_rows = subset(full_train, config["train_limit"], config["seed"])
     valid_rows = subset(read_rows(root, "valid"), config["valid_limit"], config["seed"])
+    # Catch incomplete uploads before downloading weights or training for hours.
+    test_rows = read_rows(root, "test")
+    print(f"Preflight paths OK: train={len(full_train)}, valid={len(valid_rows)}, test={len(test_rows)}", flush=True)
+    del test_rows
     for split, rows in (("train", train_rows), ("valid", valid_rows)):
         if {r["True_Label"] for r in rows} != {"0", "1"}:
             raise ValueError(f"{split} must include both classes")
@@ -79,6 +79,8 @@ def main():
             raise ValueError("Configuration differs from checkpoint. Restore the old config or choose a new run directory.")
         if state["data_signature"] != signature:
             raise ValueError("Dataset CSV files differ from checkpoint")
+        if state["best_metrics"] is not None and not (run / "best.pt").is_file():
+            raise FileNotFoundError("best.pt is missing. Restore it together with last.pt before resuming.")
     age = state["age_stats"] if state else fit_age(train_rows)
     model = FusionModel(pretrained=config["pretrained"] and state is None).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
@@ -102,9 +104,6 @@ def main():
     env = dict(python=sys.version, torch=str(torch.__version__), torchvision=str(torchvision.__version__),
                cuda=torch.version.cuda, platform=platform.platform(), device=str(device),
                gpu=torch.cuda.get_device_name(0) if device.type == "cuda" else None)
-    json_save(run / "environment.json", env)
-    json_save(run / "config.json", config)
-    json_save(run / "age_stats.json", age)
     print(json.dumps(env, indent=2), flush=True)
     print(f"Samples: train={len(train_rows)}, valid={len(valid_rows)}; age stats: {age}", flush=True)
     stop = {"requested": False}
@@ -128,6 +127,12 @@ def main():
                          torch_rng=torch.get_rng_state(),
                          cuda_rng=torch.cuda.get_rng_state_all() if device.type == "cuda" else []), last)
 
+    # Create a recoverable state before writing metadata or starting the first batch.
+    if state is None:
+        save()
+    json_save(run / "environment.json", env)
+    json_save(run / "config.json", config)
+    json_save(run / "age_stats.json", age)
     valid_dataset = FundusDataset(valid_rows, age, config["image_size"])
     valid_loader = make_loader(valid_dataset, config["batch_size"], config["num_workers"])
     while epoch < config["epochs"]:

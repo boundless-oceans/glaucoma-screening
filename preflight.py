@@ -1,0 +1,39 @@
+"""Check uploaded CSVs and paths. No PyTorch import, GPU use or model training."""
+import argparse
+import json
+from pathlib import Path
+
+from data_utils import age_value, fit_age, read_rows
+from run_utils import validate_config
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--data-root", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--config", type=Path, default=Path(__file__).resolve().parent / "config.json")
+    args = parser.parse_args()
+    defaults = json.loads((Path(__file__).parent / "config.json").read_text(encoding="utf-8-sig"))
+    overrides = json.loads(args.config.read_text(encoding="utf-8-sig"))
+    if set(overrides) - set(defaults):
+        raise ValueError("Unknown config keys")
+    validate_config({**defaults, **overrides})
+    root = args.data_root.resolve()
+    expected = {"train": 51396, "valid": 5849, "test": 5855}
+    for split in ("train", "valid", "test"):
+        rows = read_rows(root, split)
+        missing_age = sum(age_value(row["Age"]) is None for row in rows)
+        print(f"{split}: {len(rows)} rows, every referenced image exists; invalid/missing ages={missing_age}")
+        if len(rows) != expected[split]:
+            print(f"WARNING: expected official {split} count {expected[split]}")
+        if split != "test":
+            positive = sum(row["True_Label"] == "1" for row in rows)
+            if not 0 < positive < len(rows):
+                raise ValueError(f"{split} must contain both classes")
+            print(f"  positive={positive}, negative={len(rows) - positive}")
+        if split == "train":
+            print("  training-only age stats:", fit_age(rows))
+    print("Preflight OK. This checks names/CSV/config only; it does not decode images or test CUDA.")
+
+
+if __name__ == "__main__":
+    main()

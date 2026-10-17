@@ -27,7 +27,11 @@
 ```bash
 cd /root/autodl-tmp/glaucoma_first/training
 python -m pip install -r requirements.txt
+python preflight.py --data-root ..
 ```
+
+preflight.py 不加载 PyTorch、不使用 GPU、不训练，只检查 CSV、全部图片路径、两类标签和年龄参数。
+上传后应看到 train=51396、valid=5849、test=5855；这里只核对路径，不能替代原始数据完整解码或上传文件哈希校验。
 
 保留镜像自带的 GPU 版 PyTorch。AutoDL 镜像推荐配套为 Python 3.12、torch 2.8.0、torchvision 0.23.0、CUDA 12.8。
 不要使用父目录的 enviroment.yml 覆盖云端环境：该文件是 Windows/4060 的 cu126 配置。
@@ -45,6 +49,16 @@ python -c "from torchvision.models import ResNet18_Weights; ResNet18_Weights.DEF
 ```bash
 cd /root/autodl-tmp/glaucoma_first/training
 python gpu_check.py
+python -u train.py --data-root .. --config config.smoke.json --run-dir runs/smoke
+```
+
+先跑小样本：256 张训练图、128 张验证图、16 张测试图、1 轮。成功后应生成 runs/smoke/DEBUG_predictions.csv，
+只用于确认环境和流程，不能提交比赛，也不能用其指标判断最终效果。
+这一条会实际使用服务器 GPU；本地不会自行启动训练。
+
+确认小样本运行成功，再启动全量任务：
+
+```bash
 python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3
 ```
 
@@ -56,6 +70,9 @@ python -u train.py --data-root .. --run-dir runs/baseline --max-hours 3
 
 下一次执行相同命令，自动读取 runs/baseline/last.pt 接续。配置和 CSV 必须保持不变。
 默认每 200 个训练批次、每轮训练结束前、每轮验证结束后保存一次；正常暂停会额外保存。
+第一批训练前也会保存初始 last.pt，避免首次中断后仅留下配置文件而无法重新启动。
+同一个运行目录由 .run.lock 文件的操作系统锁保护，锁文件保留是正常现象；进程退出会释放锁，不要手动删除锁文件来并发训练。
+恢复训练时应一起保留 last.pt 和已有的 best.pt；最佳模型丢失会明确报错，避免训练结束后才发现无法预测。
 每轮 12 个 epoch 是整个训练任务总量，续跑不会重新开始计数。
 
 ### 后台运行（可选）
