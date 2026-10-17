@@ -1,6 +1,7 @@
 """ResNet18 + age training. Run --help for portable CLI options."""
 import argparse
 import csv
+from datetime import datetime, timezone
 import json
 import math
 import platform
@@ -119,17 +120,22 @@ def main():
     def expired():
         return stop["requested"] or (args.max_hours > 0 and time.monotonic() - started >= args.max_hours * 3600)
 
-    def save():
+    def save(status="training"):
         atomic_save(dict(format_version=1, model=model.state_dict(), optimizer=optimizer.state_dict(),
                          scaler=scaler.state_dict(), config=config, age_stats=age, data_signature=signature,
                          epoch=epoch, next_batch=next_batch, global_step=global_step,
                          loss_sum=loss_sum, seen=seen, best_score=list(best_score), best_metrics=best_metrics,
                          torch_rng=torch.get_rng_state(),
                          cuda_rng=torch.cuda.get_rng_state_all() if device.type == "cuda" else []), last)
+        json_save(run / "progress.json", dict(status=status, updated_utc=datetime.now(timezone.utc).isoformat(),
+                  epoch_index=epoch, next_batch=next_batch, global_step=global_step,
+                  total_epochs=config["epochs"], best_metrics=best_metrics))
+        print(f"Checkpoint saved: {last}; status={status}, epoch_index={epoch}, "
+              f"next_batch={next_batch}, global_step={global_step}", flush=True)
 
     # Create a recoverable state before writing metadata or starting the first batch.
     if state is None:
-        save()
+        save("initialized")
     json_save(run / "environment.json", env)
     json_save(run / "config.json", config)
     json_save(run / "age_stats.json", age)
@@ -146,7 +152,7 @@ def main():
             group["lr"] = lr
         model.train()
         if expired():
-            save()
+            save("paused")
             print("Paused and saved last.pt. Run the same command to resume.", flush=True)
             return
         for image, ages, labels, _ in loader:
@@ -172,11 +178,11 @@ def main():
             if global_step % config["save_every_steps"] == 0:
                 save()
             if expired():
-                save()
+                save("paused")
                 print("Paused and saved last.pt. Resume with the same command; no automatic inference on pause.", flush=True)
                 return
         # Keep completed training safe even if validation is interrupted externally.
-        save()
+        save("validating")
         print(f"Validating epoch {epoch + 1}...", flush=True)
         names, probabilities, labels = evaluate(model, valid_loader, device, amp)
         result = metrics(labels, probabilities)
@@ -199,10 +205,13 @@ def main():
         print(json.dumps(result), flush=True)
         epoch += 1
         next_batch, loss_sum, seen = 0, 0.0, 0
-        save()
+        save("completed" if epoch >= config["epochs"] else "paused" if expired() else "training")
         if expired():
             print("Paused after validation. best.pt is available; rerun to continue.", flush=True)
             return
+    # Also update progress when resuming an already completed run.
+    if epoch >= config["epochs"]:
+        save("completed")
     # Release optimizer memory before inference.
     del optimizer, model, scaler
     if device.type == "cuda":

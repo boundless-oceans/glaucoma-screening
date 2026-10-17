@@ -145,4 +145,10 @@ def data_signature(root):
 
 
 def json_save(path, data):
-    Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8")
+    path = Path(path)
+    temporary = Path(str(path) + ".tmp")
+    with temporary.open("w", encoding="utf-8") as stream:
+        json.dump(data, stream, indent=2, ensure_ascii=False, allow_nan=False)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
