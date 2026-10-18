@@ -1,4 +1,4 @@
-"""ResNet18 + age training. Run --help for portable CLI options."""
+"""Configurable image backbone + age training with portable checkpoints."""
 import argparse
 import csv
 from datetime import datetime, timezone
@@ -19,12 +19,13 @@ from .common import (FusionModel, FundusDataset, atomic_save, data_signature, ev
                     fit_age, json_save, make_loader, metrics, predict_checkpoint,
                     read_rows, subset, write_predictions)
 from .run_utils import RunLock, protect_output, validate_config
+from .model_config import canonical_config, checkpoint_model_name, default_run_name, load_config
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
-    parser.add_argument("--run-dir", type=Path, default=PROJECT_ROOT / "runs" / "baseline")
+    parser.add_argument("--run-dir", type=Path, help="Defaults to a separate directory for each architecture")
     parser.add_argument("--config", type=Path, default=CONFIG_DIR / "train.json")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--max-hours", type=float, default=0, help="Per invocation training budget; 0 means no limit")
@@ -33,13 +34,8 @@ def main():
     args = parser.parse_args()
     if not math.isfinite(args.max_hours) or args.max_hours < 0:
         parser.error("--max-hours must be finite and nonnegative")
-    config = json.loads(args.config.read_text(encoding="utf-8-sig"))
-    defaults = json.loads((CONFIG_DIR / "train.json").read_text(encoding="utf-8-sig"))
-    unknown = set(config) - set(defaults)
-    if unknown:
-        parser.error(f"Unknown configuration keys: {unknown}")
-    config = {**defaults, **config}
     try:
+        config = load_config(args.config)
         validate_config(config)
     except ValueError as error:
         parser.error(str(error))
@@ -51,7 +47,10 @@ def main():
     if device.type == "cuda":
         torch.cuda.manual_seed_all(config["seed"])
         torch.backends.cudnn.benchmark = False
-    root, run = args.data_root.resolve(), args.run_dir.resolve()
+    sampled = any(config[k] for k in ("train_limit", "valid_limit", "test_limit"))
+    root = args.data_root.resolve()
+    run = (args.run_dir or PROJECT_ROOT / "runs" / default_run_name(
+        config["model_name"], sampled, config["remove_black_border"])).resolve()
     try:
         protect_output(root, run, directory=True)
     except ValueError as error:
@@ -77,14 +76,16 @@ def main():
             raise ValueError(f"{split} must include both classes")
     state = torch.load(last, map_location="cpu", weights_only=True) if last.exists() else None
     if state:
-        if state["config"] != config:
+        if checkpoint_model_name(state) != config["model_name"]:
+            raise ValueError("Checkpoint architecture differs from config. Use a separate run directory.")
+        if canonical_config(state["config"]) != config:
             raise ValueError("Configuration differs from checkpoint. Restore the old config or choose a new run directory.")
         if state["data_signature"] != signature:
             raise ValueError("Dataset CSV files differ from checkpoint")
         if state["best_metrics"] is not None and not (run / "best.pt").is_file():
             raise FileNotFoundError("best.pt is missing. Restore it together with last.pt before resuming.")
     age = state["age_stats"] if state else fit_age(train_rows)
-    model = FusionModel(pretrained=config["pretrained"] and state is None).to(device)
+    model = FusionModel(pretrained=config["pretrained"] and state is None, model_name=config["model_name"]).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
     amp = config["amp"] and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=amp)
@@ -106,6 +107,8 @@ def main():
     env = dict(python=sys.version, torch=str(torch.__version__), torchvision=str(torchvision.__version__),
                cuda=torch.version.cuda, platform=platform.platform(), device=str(device),
                gpu=torch.cuda.get_device_name(0) if device.type == "cuda" else None)
+    env["model_name"] = config["model_name"]
+    env["remove_black_border"] = config["remove_black_border"]
     print(json.dumps(env, indent=2), flush=True)
     print(f"Samples: train={len(train_rows)}, valid={len(valid_rows)}; age stats: {age}", flush=True)
     stop = {"requested": False}
@@ -122,7 +125,7 @@ def main():
         return stop["requested"] or (args.max_hours > 0 and time.monotonic() - started >= args.max_hours * 3600)
 
     def save(status="training"):
-        atomic_save(dict(format_version=1, model=model.state_dict(), optimizer=optimizer.state_dict(),
+        atomic_save(dict(format_version=2, model_name=config["model_name"], model=model.state_dict(), optimizer=optimizer.state_dict(),
                          scaler=scaler.state_dict(), config=config, age_stats=age, data_signature=signature,
                          epoch=epoch, next_batch=next_batch, global_step=global_step,
                          loss_sum=loss_sum, seen=seen, best_score=list(best_score), best_metrics=best_metrics,
@@ -130,6 +133,8 @@ def main():
                          cuda_rng=torch.cuda.get_rng_state_all() if device.type == "cuda" else []), last)
         json_save(run / "progress.json", dict(status=status, updated_utc=datetime.now(timezone.utc).isoformat(),
                   epoch_index=epoch, next_batch=next_batch, global_step=global_step,
+                  model_name=config["model_name"],
+                  remove_black_border=config["remove_black_border"],
                   total_epochs=config["epochs"], best_metrics=best_metrics))
         print(f"Checkpoint saved: {last}; status={status}, epoch_index={epoch}, "
               f"next_batch={next_batch}, global_step={global_step}", flush=True)
@@ -140,10 +145,10 @@ def main():
     json_save(run / "environment.json", env)
     json_save(run / "config.json", config)
     json_save(run / "age_stats.json", age)
-    valid_dataset = FundusDataset(valid_rows, age, config["image_size"])
+    valid_dataset = FundusDataset(valid_rows, age, config["image_size"], preprocessing=config)
     valid_loader = make_loader(valid_dataset, config["batch_size"], config["num_workers"])
     while epoch < config["epochs"]:
-        dataset = FundusDataset(train_rows, age, config["image_size"], True, config["seed"], epoch)
+        dataset = FundusDataset(train_rows, age, config["image_size"], True, config["seed"], epoch, preprocessing=config)
         order = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(config["seed"] + epoch)).tolist()
         batches = math.ceil(len(dataset) / config["batch_size"])
         offset = next_batch * config["batch_size"]
@@ -191,7 +196,7 @@ def main():
         score = (result["auroc"], result["auprc_trapezoid"])
         if score > best_score:
             best_score, best_metrics = score, result
-            atomic_save(dict(format_version=1, model=model.state_dict(), config=config, age_stats=age,
+            atomic_save(dict(format_version=2, model_name=config["model_name"], model=model.state_dict(), config=config, age_stats=age,
                              data_signature=signature, epoch=epoch + 1, best_metrics=result), run / "best.pt")
             write_predictions(run / "valid_predictions.csv", names, probabilities, labels=labels)
             json_save(run / "best_metrics.json", result)

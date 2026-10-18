@@ -1,46 +1,71 @@
 # 青光眼图像与年龄融合训练
 
-默认模型为 ImageNet 预训练 ResNet18，融合标准化年龄和年龄缺失标记。
+当前默认使用 EfficientNet-B2＋年龄融合，并开启保守去黑边。
 仅 train 参与训练，valid 用于验证和选择权重，test 只做预测，不新增人工标注。
 正式训练在 AutoDL 执行；本地只编辑代码及运行轻量检查。
+
+## 文档目录
+
+- [目录结构](#project-layout)
+- [模型配置与对照实验](#model-config)
+- [去黑边：预览、开关与检查点兼容](#black-border)
+- [环境准备](#environment)
+- [推荐运行顺序](#run-workflow)
+- [后台运行与日志](#logging)
+- [检查点与预测结果](#checkpoints)
+- [训练方案与验证范围](#validation)
+- [代码测试与版本控制](#development)
+
+<a id="project-layout"></a>
 
 ## 目录结构
 
 ```text
 /root/autodl-tmp/
-  glaucoma_first/                 数据压缩包解压后的数据根目录
-    train/
-    valid/
-    test/
-    train.csv
-    valid.csv
-    test.csv
-  training/                       代码仓库根目录
-    configs/
-      train.json                  正式训练参数
-      smoke.json                  小样本参数，只覆盖与正式配置不同的项
-    src/glaucoma_training/
-      __init__.py                 项目目录常量，不加载 PyTorch
-      train.py                    训练、验证与断点恢复
-      evaluate.py                 最佳模型验证及测试集预测
-      predict.py                  仅生成测试集预测的独立入口
-      common.py                   模型、Dataset 和推理逻辑
-      data_utils.py               CSV、年龄处理与指标
-      run_utils.py                配置检查、输出保护与进程锁
-      preflight.py                上传后数据路径检查
-      gpu_check.py                GPU 前向/反向检查
-      launch.py                   Shell 调度、日志与状态记录
-    scripts/
-      train.sh                    训练和续训入口
-      test.sh                     模型评估和预测入口
-    tests/                        自动化代码测试，不训练模型
-    enviroment.yml                服务器 Conda 环境
-    requirements.txt              使用现有镜像时补装的依赖
-    README.md
-    .gitignore
-    .gitattributes
-    logs/                         自动生成，不入 Git
-    runs/                         自动生成，不入 Git
+├── glaucoma_first/                       # 数据压缩包解压后的数据根目录
+│   ├── train/
+│   ├── valid/
+│   ├── test/
+│   ├── train.csv
+│   ├── valid.csv
+│   └── test.csv
+└── training/                             # 代码仓库根目录
+    ├── configs/
+    │   ├── train.json                    # B2 正式训练，默认开启去黑边
+    │   ├── smoke.json                    # B2 小样本，继承默认去黑边配置
+    │   ├── no_blackborder.json           # B2 关闭去黑边的对照配置
+    │   ├── resnet18.json                 # ResNet18 全量对照，不去黑边
+    │   └── resnet18_smoke.json           # ResNet18 小样本，不去黑边
+    ├── src/
+    │   └── glaucoma_training/
+    │       ├── __init__.py               # 项目目录常量，不加载 PyTorch
+    │       ├── train.py                  # 训练、验证与断点恢复
+    │       ├── evaluate.py               # 最佳模型验证及测试集预测
+    │       ├── predict.py                # 仅生成测试集预测的独立入口
+    │       ├── common.py                 # 可选骨干、Dataset 和推理逻辑
+    │       ├── model_config.py           # 配置合并、架构识别和实验目录
+    │       ├── preprocess_config.py      # 版本化预处理参数及旧权重默认值
+    │       ├── preprocessing.py          # 共享去黑边与缩放补边逻辑
+    │       ├── preview_preprocessing.py  # CPU 生成裁剪前后对照图
+    │       ├── download_weights.py       # 在服务器预下载官方预训练权重
+    │       ├── data_utils.py             # CSV、年龄处理与指标
+    │       ├── run_utils.py              # 配置检查、输出保护与进程锁
+    │       ├── preflight.py              # 上传后数据路径检查
+    │       ├── gpu_check.py              # GPU 前向/反向检查
+    │       └── launch.py                 # Shell 调度、日志与状态记录
+    ├── scripts/
+    │   ├── train.sh                      # 训练和续训入口
+    │   └── test.sh                       # 模型评估和预测入口
+    ├── tests/                            # 自动化代码测试，不训练模型
+    ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
+    ├── outputs/                          # 预处理预览等生成产物，不入 Git
+    ├── logs/                             # 自动生成的日志，不入 Git
+    ├── runs/                             # 自动生成的权重和预测结果，不入 Git
+    ├── environment.yml                   # 服务器 Conda 环境
+    ├── requirements.txt                  # 使用现有镜像时补装的依赖
+    ├── README.md
+    ├── .gitignore
+    └── .gitattributes
 ```
 
 项目根目录保留说明和环境配置；模型超参数放 configs，Python 业务源码放 src。
@@ -49,13 +74,106 @@ evaluate.py 是实际运行模型的入口，不是 tests 中的开发测试。
 代码按不区分大小写的文件名匹配原图，兼容 CSV 中 .jpg 与磁盘文件 .JPG 的差异。
 请上传完整新目录，不再运行旧版根目录中的 train.py / launch.py，也不要只上传零散文件。
 
+<a id="model-config"></a>
+
+## 模型配置与对照实验
+
+支持 model_name=resnet18 或 efficientnet_b2，默认使用后者。
+EfficientNet-B2 仍与标准化年龄、年龄缺失标记拼接分类；预训练权重来自 torchvision 官方实现。
+去黑边对照只改变预处理开关：正式输入仍为 320×320、batch=32，图像增强、BCE 权重和学习率保持一致。
+比较架构时请使用 configs/no_blackborder.json 对照原 ResNet18，避免同时更换骨干和预处理后无法归因。
+不预设新架构一定更好，需要用同一验证集、相近训练预算比较；T4 延迟也尚未测量。
+
+默认目录按架构隔离：
+
+| 配置 | 模型 | 默认实验目录 |
+| --- | --- | --- |
+| configs/train.json | EfficientNet-B2 | runs/efficientnet_b2_blackborder |
+| configs/smoke.json | EfficientNet-B2 小样本 | runs/efficientnet_b2_blackborder_smoke |
+| configs/no_blackborder.json | EfficientNet-B2 不去黑边 | runs/efficientnet_b2 |
+| configs/resnet18.json | ResNet18 对照，不去黑边 | runs/baseline |
+| configs/resnet18_smoke.json | ResNet18 小样本对照 | runs/smoke |
+
+同一分支也可以运行 ResNet18 对照，不必反复切分支：
+
+```bash
+bash scripts/train.sh --config configs/resnet18_smoke.json
+bash scripts/test.sh --smoke --run-dir runs/smoke
+```
+
+--smoke 和 --config 不能同时传入；小样本测试按检查点实际架构运行。
+
+全量对照则使用：
+
+```bash
+bash scripts/train.sh --config configs/resnet18.json --max-hours 3
+bash scripts/test.sh --config configs/resnet18.json
+```
+
+显式 --checkpoint 时，实际模型以权重内记录为准；--config 控制默认实验目录和配置日志，不会改变权重的架构。
+不要使用 B2 的默认命令续训旧 runs/baseline，恢复旧 ResNet18 任务时需传 configs/resnet18.json。
+
+<a id="black-border"></a>
+
+## 去黑边：预览、开关与检查点兼容
+
+当前默认流水线：原图 EXIF/RGB 校正 → 可选去黑边 → 等比例缩放补边 → 训练时随机增强 → 模型。
+训练、验证、独立评估和测试预测共用 prepare_image；验证和测试不做随机增强。
+配置中记录 remove_black_border、black_border_threshold、black_border_margin、black_border_version，随权重保存。
+旧权重缺少这些参数时按不开启处理；评估按权重配置执行，不会套用当前分支的新默认值。
+改变开关或参数后不允许续用旧实验目录的检查点，新默认目录包含 _blackborder，防止和原 B2 任务混用。
+
+version=1 是保守的外接矩形裁剪：
+
+- 在最长边不超过 512 的缩小图上检测 max(R,G,B)>8 的前景，取全部前景的外接框。
+- 默认保留原图宽高各 2% 的安全边距，不丢弃小连通块来追求更紧的裁剪。
+- 暗图、前景过少、裁剪区域过小等情况回退整张原图；这是安全启发式，不能保证所有图片都判断正确。
+- 不裁视盘、不做分割，不保证清除圆形视野四角的所有黑色；后续为统一尺寸补上的黑边也会保留。
+- 不覆盖原始图片、不新增标注，不引入 OpenCV 等新依赖。检测及解码耗时仍需计入 T4 端到端延迟。
+
+先检查训练图的前后对照，不加载 PyTorch、不训练：
+
+```bash
+cd /root/autodl-tmp/training
+conda activate glaucoma-cloud
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python -m glaucoma_training.preview_preprocessing --count 12 --split train
+```
+
+输出到 training/outputs/preprocess_preview_时间戳/preview.jpg 和 report.json。
+每对左图为原图（绿框表示拟保留区域），右图为模型输入预览；JSON 记录原图坐标、裁剪原因和参数。
+默认包含正负样本的小样本预览，也可 --split valid。预览不提供 test 选项，不以测试图挑选预处理参数。
+outputs 已被 Git 忽略，里面的私有图片不应上传代码仓库。
+
+正式训练和测试仍是原来的两个 Shell 命令，默认开启去黑边：
+
+```bash
+bash scripts/train.sh --smoke
+bash scripts/test.sh --smoke
+bash scripts/train.sh --max-hours 3
+bash scripts/test.sh
+```
+
+与不去黑边的 B2 对照：
+
+```bash
+bash scripts/train.sh --config configs/no_blackborder.json --max-hours 3
+bash scripts/test.sh --config configs/no_blackborder.json
+```
+
+开启后的默认目录为 runs/efficientnet_b2_blackborder（小样本加 _smoke）；关闭时仍为 runs/efficientnet_b2。
+实际提交文件所在 evaluations 子目录由测试脚本打印。不要只根据预览认为效果提高，仍需比较验证指标。
+本地已对 8 张真实训练图片生成预览：7 张裁掉外围背景，1 张保留整图；这是样例检查，不是全量质量保证。
+
+<a id="environment"></a>
+
 ## 环境准备
 
 无卡模式也可以创建环境；有卡开机后才能验证 CUDA。
 
 ```bash
 cd /root/autodl-tmp/training
-conda env create -f enviroment.yml
+conda env create -f environment.yml
 conda activate glaucoma-cloud
 ```
 
@@ -76,10 +194,12 @@ preflight 不加载 PyTorch、不调用 GPU，也不完整解码图片，不能�
 首次需要下载官方 ImageNet 权重，可提前在当前环境下载，避免占用 GPU 时段：
 
 ```bash
-python -c "from torchvision.models import ResNet18_Weights; ResNet18_Weights.DEFAULT.get_state_dict(progress=True)"
+python -m glaucoma_training.download_weights
 ```
 
 此命令不训练、不调用 GPU。下载失败先解决网络，不要将 pretrained=false 当作正式替代方案。
+
+<a id="run-workflow"></a>
 
 ## 推荐运行顺序
 
@@ -101,19 +221,21 @@ bash scripts/train.sh --max-hours 3
 bash scripts/test.sh
 ```
 
-- 默认数据路径 /root/autodl-tmp/glaucoma_first，默认模型目录 training/runs/baseline。
+- 默认数据路径 /root/autodl-tmp/glaucoma_first，默认模型目录 training/runs/efficientnet_b2_blackborder。
 - Shell 从自身位置找到代码和 configs，终端当前目录不影响默认路径；也可以使用脚本绝对路径启动。
 - 手动传入的相对 --config、--run-dir、--checkpoint 仍相对于终端当前目录，推荐传绝对路径。
 - train.sh 调用 launch，再启动训练模块；同一命令自动恢复 last.pt，不重复开始。
 - train.sh 固定跳过训练后的测试集推理；test.sh 单独加载 best.pt，评估 valid 并生成 test 的预测。
 - 至少完成一轮验证才会有 best.pt，未生成时测试入口会明确报错。
-- --smoke 对应 configs/smoke.json 和 runs/smoke；正式配置为 configs/train.json。
+- --smoke 对应 configs/smoke.json 和 runs/efficientnet_b2_blackborder_smoke；正式配置为 configs/train.json，包含 model_name=efficientnet_b2。
 - 可用 `bash scripts/train.sh --config /配置绝对路径.json --run-dir /新实验绝对路径` 建立独立实验，不能同时传 --smoke。
 - 测试其他权重：`bash scripts/test.sh --checkpoint /权重绝对路径/best.pt`。
 
 脚本自动激活已创建的 glaucoma-cloud；不会安装环境、申请 GPU、自动开关机或等待空闲 GPU。
 --max-hours 默认 3，设为 0 表示不设预算。计时不含初始下载、初始化和测试；验证会完整结束，因此不是严格的关机定时器。
 需要让出 GPU 时，前台按一次 Ctrl+C，或向后台 PID 发送 SIGTERM，等待保存提示后再关机。
+
+<a id="logging"></a>
 
 ## 后台运行与日志
 
@@ -129,13 +251,14 @@ bootstrap 日志记录 Conda 激活等早期失败；Python 成功启动后，�
 
 ```text
 logs/
-  latest_train.txt                 最近一次训练日志目录绝对路径
-  latest_test.txt                  最近一次评估日志目录绝对路径
-  train_UTC时间戳_PID/ 或 test_UTC时间戳_PID/
-    console.log                    带时间戳的完整标准输出、错误输出、异常堆栈
-    status.json                    PID、运行阶段、开始/结束时间、退出码和状态
-    environment.json               Python、依赖版本、GPU 可见设置
-    requested_config.json          训练传入的配置原文
+├── latest_train.txt                       # 最近一次训练日志目录绝对路径
+├── latest_test.txt                        # 最近一次评估日志目录绝对路径
+└── train_UTC时间戳_PID/ 或 test_UTC时间戳_PID/
+    ├── console.log                       # 标准输出、错误输出和异常堆栈，带时间戳
+    ├── status.json                       # PID、阶段、起止时间、退出码和状态
+    ├── environment.json                  # Python、依赖版本、GPU 可见设置
+    ├── effective_config.json             # 合并默认值后的配置，测试时是目录配置
+    └── requested_config.json             # 训练传入的配置原文，仅训练日志生成
 ```
 
 启动时会把 Git 提交号、nvidia-smi、磁盘空间和内存情况写入 console.log。
@@ -145,7 +268,7 @@ logs/
 ```bash
 tail -f "$(cat logs/latest_train.txt)/console.log"
 cat "$(cat logs/latest_train.txt)/status.json"
-cat runs/baseline/progress.json
+cat runs/efficientnet_b2_blackborder/progress.json
 ```
 
 每 25 个训练批次及每轮最后一批会打印进度、loss 和学习率，每轮结束打印验证指标。
@@ -154,22 +277,28 @@ paused 是正常保存暂停，completed 表示完成，failed 表示出错。�
 SIGKILL、系统 OOM 或主机掉电时来不及写最终状态，需要结合进程、最后日志、progress 和平台系统日志排查。
 日志和权重写入时尽量刷新，但不能保证物理磁盘故障后可恢复，重要权重请另行备份。
 
+<a id="checkpoints"></a>
+
 ## 检查点与预测结果
 
 ```text
-runs/baseline/
-  last.pt                         续训状态：模型、优化器、AMP、随机状态、下一批位置
-  best.pt                         最佳验证模型参数
-  progress.json                   最近一次成功保存的状态与位置
-  config.json                     本次生效配置快照（运行产物，不是源码配置）
-  environment.json / age_stats.json
-  history.jsonl / best_metrics.json
-  valid_predictions.csv / valid_thresholds.csv
-  evaluations/UTC时间戳_PID/
-    validation_metrics.json       重新验证的指标
-    validation_predictions.csv    验证预测与真实标签
-    checkpoint_info.json          所用权重 SHA256、环境、配置及完成状态
-    submission.csv                本次正式预测结果
+runs/efficientnet_b2_blackborder/
+├── last.pt                          # 模型、优化器、AMP、随机状态及下一批位置
+├── best.pt                          # 最佳验证模型参数
+├── progress.json                    # 最近一次成功保存的状态与位置
+├── config.json                      # 本次生效配置快照，属于运行产物
+├── environment.json                 # 训练运行环境
+├── age_stats.json                   # 训练数据拟合的年龄统计量
+├── history.jsonl                    # 各轮验证指标
+├── best_metrics.json                # 最佳模型验证指标
+├── valid_predictions.csv            # 最佳模型验证预测
+├── valid_thresholds.csv             # 最佳模型的验证阈值表现
+└── evaluations/
+    └── UTC时间戳_PID/
+        ├── validation_metrics.json  # 重新验证的指标
+        ├── validation_predictions.csv # 验证预测与真实标签
+        ├── checkpoint_info.json     # 权重 SHA256、环境、配置及完成状态
+        └── submission.csv           # 本次正式预测结果
 ```
 
 正式提交使用 test.sh 打印出的 evaluations 目录中的 submission.csv。
@@ -184,22 +313,31 @@ valid_thresholds.csv 记录 0.01～0.99 的验证阈值表现和 hard_label_auro
 第一次训练前即保存初始 last.pt，此后每 200 批、训练阶段结束前、验证结束后和正常停止时保存。
 正常暂停从下一批继续，强制停止只能恢复到最近一次已保存的批次。续训保持配置、CSV 和原图不变，
 保留 last.pt 和 best.pt；最佳模型丢失会报错。不要删除 .run.lock 来并发启动同一实验，进程退出会释放系统锁。
-相同配置的旧 state_dict 检查点仍可使用；移动目录不改变模型结构和权重键名。
+旧版缺少 model_name 的检查点按 ResNet18 识别；新检查点保存架构标记。
+评估按检查点选择骨干，续训拒绝将 ResNet18 权重载入 EfficientNet-B2；相同架构的旧权重键名保持兼容。
+
+<a id="validation"></a>
 
 ## 训练方案与验证范围
 
 configs/train.json 默认：320×320，batch=32，4 个读取进程，12 轮，AdamW，学习率 1e-4，混合精度。
-图像等比例缩放补边，训练时 50% 水平翻转、±10° 旋转、轻微亮度/对比度增强；验证与预测不随机增强。
+图像先按配置保守去黑边，再等比例缩放补边，训练时 50% 水平翻转、±10° 旋转、轻微亮度/对比度增强；验证与预测不随机增强。
 年龄空值、非有限值、<=0 或 >110 视为缺失，用训练数据中位数填补；均值和标准差仅从训练数据计算。
 图像特征与年龄、缺失标记拼接分类，默认 BCE pos_weight=1，不同时叠加多种不平衡处理。
 显存不足时在新实验配置中减小 batch_size；内存/数据加载问题可减小 num_workers。
 pretrained=false 和非零样本 limit 只用于流程调试。配置改变请建新实验目录，不要混用检查点。
 原图解码可能成为性能瓶颈，跑通后再按 GPU 利用率决定是否建立缩放缓存。
 
-仅此前在 CPU 合成小样例上验证过训练/恢复流程；目录迁移后做轻量测试和路径检查，未在本地启动训练，未在 5090 实测。
+此前在 CPU 合成小样例上验证过训练/恢复流程。2026-10-18 合并前检查中，29 项轻量测试通过，
+19 个 Python 文件语法检查通过；该次检查未加载 PyTorch、未启动训练。当前尚未在 5090 实测。
 数据顺序与增强按 seed、epoch、图片索引固定，跨 GPU/驱动/PyTorch 版本不保证逐位相同。
 最终仍需官方 PyTorch 2.10.0/torchvision 0.25.0、T4 16GB 环境核验，单图端到端 <=100ms 和模型 <=500MB 尚未实测。
 仅加载自己生成的可信权重。复赛按届时清单打包，不能把 last.pt 等整个 runs 目录直接当作提交模型包。
+
+后续早停、错误样本报告及不平衡处理实验仍在计划中，当前版本尚未实现早停和错误图片报告。
+本地计划位于 docs/，该目录被 Git 忽略，不随仓库发布。
+
+<a id="development"></a>
 
 ## 代码测试与版本控制
 
@@ -209,5 +347,5 @@ pretrained=false 和非零样本 limit 只用于流程调试。配置改变请�
 python -B -m unittest discover -s tests -v
 ```
 
-Git 仅位于 training/.git；数据、logs、runs、缓存均不入库。提交信息用 `关键词: 改动总结`，分支用 `关键词/用途`。
+Git 仅位于 training/.git；数据、docs、outputs、logs、runs、缓存均不入库。提交信息用 `关键词: 改动总结`，分支用 `关键词/用途`。
 模型与私有数据不要公开上传，服务器不必携带 .git；需要 Git 记录诊断时再同步私有代码仓库。

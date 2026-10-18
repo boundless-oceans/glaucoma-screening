@@ -1,6 +1,5 @@
 # AutoDL / Ubuntu 22.04 / NVIDIA RTX 5090 training environment.
-# Keep this filename for consistency with the user's requested spelling.
-# Create on the SERVER: conda env create -f enviroment.yml
+# Create on the SERVER: conda env create -f environment.yml
 # GPU drivers are provided by the host; no system CUDA Toolkit reinstall needed.
 name: glaucoma-cloud
 channels:

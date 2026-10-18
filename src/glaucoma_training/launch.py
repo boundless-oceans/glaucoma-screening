@@ -12,6 +12,8 @@ import subprocess
 import sys
 import traceback
 from . import CONFIG_DIR, DEFAULT_DATA_ROOT, PROJECT_ROOT
+from .model_config import default_run_name, load_config
+from .run_utils import validate_config
 
 CODE = PROJECT_ROOT
 
@@ -108,13 +110,13 @@ def main():
     if args.smoke and args.config:
         parser.error("Choose --smoke OR --config")
     root = args.data_root.resolve()
-    run = (args.run_dir or CODE / "runs" / ("smoke" if args.smoke else "baseline")).resolve()
+    run = args.run_dir.resolve() if args.run_dir else None
     config = (args.config or CONFIG_DIR / ("smoke.json" if args.smoke else "train.json")).resolve()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f") + f"_{os.getpid()}"
     session = LoggedSession(CODE / "logs" / f"{args.mode}_{stamp}")
     status_path = session.directory / "status.json"
     state = dict(status="running", mode=args.mode, stage="startup", start_utc=utc_now(),
-                 pid=os.getpid(), data_root=str(root), run_dir=str(run), argv=sys.argv)
+                 pid=os.getpid(), data_root=str(root), run_dir=str(run) if run else None, argv=sys.argv)
     write_status(status_path, state)
     (CODE / "logs" / f"latest_{args.mode}.txt").write_text(str(session.directory), encoding="utf-8")
     signal.signal(signal.SIGINT, session.forward_stop)
@@ -122,6 +124,17 @@ def main():
     code = 0
     try:
         session.log(f"Logs: {session.directory}")
+        resolved_config = load_config(config)
+        validate_config(resolved_config)
+        sampled = any(resolved_config[k] for k in ("train_limit", "valid_limit", "test_limit"))
+        profile_model = resolved_config["model_name"]
+        run = (run or CODE / "runs" / default_run_name(profile_model, sampled, resolved_config["remove_black_border"])).resolve()
+        state.update(run_dir=str(run), model_profile=profile_model, config_path=str(config))
+        write_status(status_path, state)
+        write_status(session.directory / "effective_config.json", resolved_config)
+        session.log(f"Model profile: {profile_model}; run directory: {run}")
+        session.log(f"Black-border removal: {resolved_config['remove_black_border']}; "
+                    f"threshold={resolved_config['black_border_threshold']}, margin={resolved_config['black_border_margin']}")
         versions = {}
         for package in ("torch", "torchvision", "numpy", "Pillow"):
             try:
@@ -132,6 +145,7 @@ def main():
                         packages=versions, conda_env=os.environ.get("CONDA_DEFAULT_ENV"),
                         cuda_visible_devices=os.environ.get("CUDA_VISIBLE_DEVICES"),
                         max_hours=args.max_hours, threshold=args.threshold)
+        snapshot["model_profile"] = profile_model
         write_status(session.directory / "environment.json", snapshot)
         session.log(json.dumps(snapshot, ensure_ascii=False))
         session.run("git revision", ["git", "rev-parse", "HEAD"], optional=True, timeout=10)
