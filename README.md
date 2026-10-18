@@ -1,6 +1,6 @@
 # 青光眼图像与年龄融合训练
 
-当前实验分支默认模型为 ImageNet 预训练 EfficientNet-B2，融合标准化年龄和年龄缺失标记。
+当前实验分支默认使用 EfficientNet-B2＋年龄融合，并开启保守去黑边。
 仅 train 参与训练，valid 用于验证和选择权重，test 只做预测，不新增人工标注。
 正式训练在 AutoDL 执行；本地只编辑代码及运行轻量检查。
 
@@ -19,7 +19,8 @@
     configs/
       train.json                  EfficientNet-B2 正式训练参数
       smoke.json                  EfficientNet-B2 小样本参数
-      resnet18.json               原 ResNet18 全量对照参数
+      no_blackborder.json         关闭去黑边的 B2 对照配置
+      resnet18.json               原 ResNet18 全量对照参数（不去黑边）
       resnet18_smoke.json         ResNet18 小样本对照参数
     src/glaucoma_training/
       __init__.py                 项目目录常量，不加载 PyTorch
@@ -28,6 +29,9 @@
       predict.py                  仅生成测试集预测的独立入口
       common.py                   可选骨干、Dataset 和推理逻辑
       model_config.py             配置合并、架构识别和默认实验目录
+      preprocess_config.py        版本化预处理参数及旧检查点默认值
+      preprocessing.py            共享的去黑边与缩放补边逻辑
+      preview_preprocessing.py    CPU 生成裁剪前后对照图
       download_weights.py         在服务器预下载对应预训练权重
       data_utils.py               CSV、年龄处理与指标
       run_utils.py                配置检查、输出保护与进程锁
@@ -57,16 +61,18 @@ evaluate.py 是实际运行模型的入口，不是 tests 中的开发测试。
 
 本分支支持 model_name=resnet18 或 efficientnet_b2，默认使用后者。
 EfficientNet-B2 仍与标准化年龄、年龄缺失标记拼接分类；预训练权重来自 torchvision 官方实现。
-当前只改变图像骨干：正式输入仍是 320×320、batch=32、同一增强、BCE 权重与学习率，未添加去黑边或更高分辨率。
+本分支在 B2 上只增加去黑边：正式输入仍为 320×320、batch=32，图像增强、BCE 权重和学习率保持原样。
+比较架构时请使用 configs/no_blackborder.json 对照原 ResNet18，避免同时更换骨干和预处理后无法归因。
 不预设新架构一定更好，需要用同一验证集、相近训练预算比较；T4 延迟也尚未测量。
 
 默认目录按架构隔离：
 
 | 配置 | 模型 | 默认实验目录 |
 | --- | --- | --- |
-| configs/train.json | EfficientNet-B2 | runs/efficientnet_b2 |
-| configs/smoke.json | EfficientNet-B2 小样本 | runs/efficientnet_b2_smoke |
-| configs/resnet18.json | ResNet18 对照 | runs/baseline |
+| configs/train.json | EfficientNet-B2 | runs/efficientnet_b2_blackborder |
+| configs/smoke.json | EfficientNet-B2 小样本 | runs/efficientnet_b2_blackborder_smoke |
+| configs/no_blackborder.json | EfficientNet-B2 不去黑边 | runs/efficientnet_b2 |
+| configs/resnet18.json | ResNet18 对照，不去黑边 | runs/baseline |
 | configs/resnet18_smoke.json | ResNet18 小样本对照 | runs/smoke |
 
 同一分支也可以运行 ResNet18 对照，不必反复切分支：
@@ -87,6 +93,56 @@ bash scripts/test.sh --config configs/resnet18.json
 
 显式 --checkpoint 时，实际模型以权重内记录为准；--config 控制默认实验目录和配置日志，不会改变权重的架构。
 不要使用 B2 的默认命令续训旧 runs/baseline，恢复旧 ResNet18 任务时需传 configs/resnet18.json。
+
+## 去黑边：预览、开关与检查点兼容
+
+当前默认流水线：原图 EXIF/RGB 校正 → 可选去黑边 → 等比例缩放补边 → 训练时随机增强 → 模型。
+训练、验证、独立评估和测试预测共用 prepare_image；验证和测试不做随机增强。
+配置中记录 remove_black_border、black_border_threshold、black_border_margin、black_border_version，随权重保存。
+旧权重缺少这些参数时按不开启处理；评估按权重配置执行，不会套用当前分支的新默认值。
+改变开关或参数后不允许续用旧实验目录的检查点，新默认目录包含 _blackborder，防止和原 B2 任务混用。
+
+version=1 是保守的外接矩形裁剪：
+
+- 在最长边不超过 512 的缩小图上检测 max(R,G,B)>8 的前景，取全部前景的外接框。
+- 默认保留原图宽高各 2% 的安全边距，不丢弃小连通块来追求更紧的裁剪。
+- 暗图、前景过少、裁剪区域过小等情况回退整张原图；这是安全启发式，不能保证所有图片都判断正确。
+- 不裁视盘、不做分割，不保证清除圆形视野四角的所有黑色；后续为统一尺寸补上的黑边也会保留。
+- 不覆盖原始图片、不新增标注，不引入 OpenCV 等新依赖。检测及解码耗时仍需计入 T4 端到端延迟。
+
+先检查训练图的前后对照，不加载 PyTorch、不训练：
+
+```bash
+cd /root/autodl-tmp/training
+conda activate glaucoma-cloud
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+python -m glaucoma_training.preview_preprocessing --count 12 --split train
+```
+
+输出到 training/outputs/preprocess_preview_时间戳/preview.jpg 和 report.json。
+每对左图为原图（绿框表示拟保留区域），右图为模型输入预览；JSON 记录原图坐标、裁剪原因和参数。
+默认包含正负样本的小样本预览，也可 --split valid。预览不提供 test 选项，不以测试图挑选预处理参数。
+outputs 已被 Git 忽略，里面的私有图片不应上传代码仓库。
+
+正式训练和测试仍是原来的两个 Shell 命令，默认开启去黑边：
+
+```bash
+bash scripts/train.sh --smoke
+bash scripts/test.sh --smoke
+bash scripts/train.sh --max-hours 3
+bash scripts/test.sh
+```
+
+与不去黑边的 B2 对照：
+
+```bash
+bash scripts/train.sh --config configs/no_blackborder.json --max-hours 3
+bash scripts/test.sh --config configs/no_blackborder.json
+```
+
+开启后的默认目录为 runs/efficientnet_b2_blackborder（小样本加 _smoke）；关闭时仍为 runs/efficientnet_b2。
+实际提交文件所在 evaluations 子目录由测试脚本打印。不要只根据预览认为效果提高，仍需比较验证指标。
+本地已对 8 张真实训练图片生成预览：7 张裁掉外围背景，1 张保留整图；这是样例检查，不是全量质量保证。
 
 ## 环境准备
 
@@ -140,13 +196,13 @@ bash scripts/train.sh --max-hours 3
 bash scripts/test.sh
 ```
 
-- 默认数据路径 /root/autodl-tmp/glaucoma_first，默认模型目录 training/runs/efficientnet_b2。
+- 默认数据路径 /root/autodl-tmp/glaucoma_first，默认模型目录 training/runs/efficientnet_b2_blackborder。
 - Shell 从自身位置找到代码和 configs，终端当前目录不影响默认路径；也可以使用脚本绝对路径启动。
 - 手动传入的相对 --config、--run-dir、--checkpoint 仍相对于终端当前目录，推荐传绝对路径。
 - train.sh 调用 launch，再启动训练模块；同一命令自动恢复 last.pt，不重复开始。
 - train.sh 固定跳过训练后的测试集推理；test.sh 单独加载 best.pt，评估 valid 并生成 test 的预测。
 - 至少完成一轮验证才会有 best.pt，未生成时测试入口会明确报错。
-- --smoke 对应 configs/smoke.json 和 runs/efficientnet_b2_smoke；正式配置为 configs/train.json，包含 model_name=efficientnet_b2。
+- --smoke 对应 configs/smoke.json 和 runs/efficientnet_b2_blackborder_smoke；正式配置为 configs/train.json，包含 model_name=efficientnet_b2。
 - 可用 `bash scripts/train.sh --config /配置绝对路径.json --run-dir /新实验绝对路径` 建立独立实验，不能同时传 --smoke。
 - 测试其他权重：`bash scripts/test.sh --checkpoint /权重绝对路径/best.pt`。
 
@@ -184,7 +240,7 @@ logs/
 ```bash
 tail -f "$(cat logs/latest_train.txt)/console.log"
 cat "$(cat logs/latest_train.txt)/status.json"
-cat runs/efficientnet_b2/progress.json
+cat runs/efficientnet_b2_blackborder/progress.json
 ```
 
 每 25 个训练批次及每轮最后一批会打印进度、loss 和学习率，每轮结束打印验证指标。
@@ -196,7 +252,7 @@ SIGKILL、系统 OOM 或主机掉电时来不及写最终状态，需要结合�
 ## 检查点与预测结果
 
 ```text
-runs/efficientnet_b2/
+runs/efficientnet_b2_blackborder/
   last.pt                         续训状态：模型、优化器、AMP、随机状态、下一批位置
   best.pt                         最佳验证模型参数
   progress.json                   最近一次成功保存的状态与位置
@@ -229,7 +285,7 @@ valid_thresholds.csv 记录 0.01～0.99 的验证阈值表现和 hard_label_auro
 ## 训练方案与验证范围
 
 configs/train.json 默认：320×320，batch=32，4 个读取进程，12 轮，AdamW，学习率 1e-4，混合精度。
-图像等比例缩放补边，训练时 50% 水平翻转、±10° 旋转、轻微亮度/对比度增强；验证与预测不随机增强。
+图像先按配置保守去黑边，再等比例缩放补边，训练时 50% 水平翻转、±10° 旋转、轻微亮度/对比度增强；验证与预测不随机增强。
 年龄空值、非有限值、<=0 或 >110 视为缺失，用训练数据中位数填补；均值和标准差仅从训练数据计算。
 图像特征与年龄、缺失标记拼接分类，默认 BCE pos_weight=1，不同时叠加多种不平衡处理。
 显存不足时在新实验配置中减小 batch_size；内存/数据加载问题可减小 num_workers。
