@@ -1,5 +1,9 @@
 {
   "model_name": "efficientnet_b2",
+  "remove_black_border": true,
+  "black_border_threshold": 8,
+  "black_border_margin": 0.02,
+  "black_border_version": 1,
   "image_size": 320,
   "batch_size": 32,
   "num_workers": 4,

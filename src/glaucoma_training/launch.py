@@ -128,11 +128,13 @@ def main():
         validate_config(resolved_config)
         sampled = any(resolved_config[k] for k in ("train_limit", "valid_limit", "test_limit"))
         profile_model = resolved_config["model_name"]
-        run = (run or CODE / "runs" / default_run_name(profile_model, sampled)).resolve()
+        run = (run or CODE / "runs" / default_run_name(profile_model, sampled, resolved_config["remove_black_border"])).resolve()
         state.update(run_dir=str(run), model_profile=profile_model, config_path=str(config))
         write_status(status_path, state)
         write_status(session.directory / "effective_config.json", resolved_config)
         session.log(f"Model profile: {profile_model}; run directory: {run}")
+        session.log(f"Black-border removal: {resolved_config['remove_black_border']}; "
+                    f"threshold={resolved_config['black_border_threshold']}, margin={resolved_config['black_border_margin']}")
         versions = {}
         for package in ("torch", "torchvision", "numpy", "Pillow"):
             try:

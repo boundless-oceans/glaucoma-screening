@@ -11,14 +11,17 @@ from torchvision.models import resnet18, ResNet18_Weights, efficientnet_b2, Effi
 from torchvision.transforms.functional import to_tensor, normalize
 from .run_utils import protect_output
 from .model_config import checkpoint_model_name, model_name_from_config
+from .preprocess_config import preprocessing_options
+from .preprocessing import prepare_image
 from .data_utils import (read_rows, age_value, fit_age, subset, metrics,
                         write_predictions, data_signature, json_save)
 
 
 class FundusDataset(Dataset):
-    def __init__(self, rows, age, size, training=False, seed=42, epoch=0):
+    def __init__(self, rows, age, size, training=False, seed=42, epoch=0, preprocessing=None):
         self.rows, self.age, self.size = rows, age, size
         self.training, self.seed, self.epoch = training, seed, epoch
+        self.preprocessing = preprocessing_options(preprocessing or {})
 
     def __len__(self):
         return len(self.rows)
@@ -27,10 +30,7 @@ class FundusDataset(Dataset):
         row = self.rows[index]
         try:
             with Image.open(row["path"]) as source:
-                image = ImageOps.exif_transpose(source).convert("RGB")
-            # Contain + letterbox preserves the entire field; no random crop.
-            image = ImageOps.pad(image, (self.size, self.size),
-                                 method=Image.Resampling.BILINEAR, color=(0, 0, 0))
+                image, _ = prepare_image(source, self.size, self.preprocessing)
             if self.training:
                 # Per-image/epoch seed makes worker prefetch and mid-epoch resume safe.
                 rng = random.Random(self.seed + self.epoch * 1000003 + index * 9176)
@@ -124,7 +124,7 @@ def predict_checkpoint(checkpoint, root, output, device="cuda", batch_size=32, w
         raise ValueError("CSV data differs from the checkpoint; use the original dataset")
     model = FusionModel(model_name=model_name).to(device)
     model.load_state_dict(state["model"])
-    dataset = FundusDataset(rows, state["age_stats"], config["image_size"])
+    dataset = FundusDataset(rows, state["age_stats"], config["image_size"], preprocessing=config)
     loader = make_loader(dataset, batch_size, workers)
     names, probabilities, _ = evaluate(model, loader, device, config["amp"])
     if names != [r["Image_name"] for r in rows]:
@@ -135,6 +135,7 @@ def predict_checkpoint(checkpoint, root, output, device="cuda", batch_size=32, w
     json_save(str(output) + ".json", dict(checkpoint=str(Path(checkpoint).resolve()),
               checkpoint_epoch=state["epoch"], threshold=threshold, rows=len(names),
               model_name=model_name,
+              preprocessing=preprocessing_options(config),
               sampled=allow_sample and any(config.get(k, 0) for k in ("train_limit", "valid_limit", "test_limit")),
               validation=state.get("best_metrics")))
     print(f"Predictions written: {output} ({len(names)} rows)", flush=True)

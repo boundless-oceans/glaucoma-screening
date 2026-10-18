@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from . import CONFIG_DIR
+from .preprocess_config import preprocessing_options
 
 SUPPORTED_MODELS = ("resnet18", "efficientnet_b2")
 
@@ -24,11 +25,13 @@ def checkpoint_model_name(state):
 
 
 def canonical_config(config):
-    return {**config, "model_name": model_name_from_config(config)}
+    return {**config, "model_name": model_name_from_config(config), **preprocessing_options(config)}
 
 
-def default_run_name(model_name, smoke=False):
+def default_run_name(model_name, smoke=False, remove_black_border=False):
     model_name_from_config({"model_name": model_name})
+    if remove_black_border:
+        return model_name + "_blackborder" + ("_smoke" if smoke else "")
     if model_name == "resnet18":
         return "smoke" if smoke else "baseline"
     return model_name + ("_smoke" if smoke else "")

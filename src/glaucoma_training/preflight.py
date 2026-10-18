@@ -17,6 +17,8 @@ def main():
     config = load_config(args.config)
     validate_config(config)
     print(f"Model: {config['model_name']}; image_size={config['image_size']}; batch_size={config['batch_size']}")
+    print(f"Black-border removal: {config['remove_black_border']}; "
+          f"threshold={config['black_border_threshold']}; margin={config['black_border_margin']}")
     root = args.data_root.resolve()
     expected = {"train": 51396, "valid": 5849, "test": 5855}
     for split in ("train", "valid", "test"):

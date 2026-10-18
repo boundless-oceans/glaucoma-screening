@@ -49,7 +49,8 @@ def main():
         torch.backends.cudnn.benchmark = False
     sampled = any(config[k] for k in ("train_limit", "valid_limit", "test_limit"))
     root = args.data_root.resolve()
-    run = (args.run_dir or PROJECT_ROOT / "runs" / default_run_name(config["model_name"], sampled)).resolve()
+    run = (args.run_dir or PROJECT_ROOT / "runs" / default_run_name(
+        config["model_name"], sampled, config["remove_black_border"])).resolve()
     try:
         protect_output(root, run, directory=True)
     except ValueError as error:
@@ -107,6 +108,7 @@ def main():
                cuda=torch.version.cuda, platform=platform.platform(), device=str(device),
                gpu=torch.cuda.get_device_name(0) if device.type == "cuda" else None)
     env["model_name"] = config["model_name"]
+    env["remove_black_border"] = config["remove_black_border"]
     print(json.dumps(env, indent=2), flush=True)
     print(f"Samples: train={len(train_rows)}, valid={len(valid_rows)}; age stats: {age}", flush=True)
     stop = {"requested": False}
@@ -132,6 +134,7 @@ def main():
         json_save(run / "progress.json", dict(status=status, updated_utc=datetime.now(timezone.utc).isoformat(),
                   epoch_index=epoch, next_batch=next_batch, global_step=global_step,
                   model_name=config["model_name"],
+                  remove_black_border=config["remove_black_border"],
                   total_epochs=config["epochs"], best_metrics=best_metrics))
         print(f"Checkpoint saved: {last}; status={status}, epoch_index={epoch}, "
               f"next_batch={next_batch}, global_step={global_step}", flush=True)
@@ -142,10 +145,10 @@ def main():
     json_save(run / "environment.json", env)
     json_save(run / "config.json", config)
     json_save(run / "age_stats.json", age)
-    valid_dataset = FundusDataset(valid_rows, age, config["image_size"])
+    valid_dataset = FundusDataset(valid_rows, age, config["image_size"], preprocessing=config)
     valid_loader = make_loader(valid_dataset, config["batch_size"], config["num_workers"])
     while epoch < config["epochs"]:
-        dataset = FundusDataset(train_rows, age, config["image_size"], True, config["seed"], epoch)
+        dataset = FundusDataset(train_rows, age, config["image_size"], True, config["seed"], epoch, preprocessing=config)
         order = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(config["seed"] + epoch)).tolist()
         batches = math.ceil(len(dataset) / config["batch_size"])
         offset = next_batch * config["batch_size"]
