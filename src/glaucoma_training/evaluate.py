@@ -11,6 +11,7 @@ from .common import FusionModel, FundusDataset, evaluate, make_loader
 from .data_utils import data_signature, json_save, metrics, read_rows, subset, write_predictions
 from .run_utils import protect_output
 from .model_config import checkpoint_model_name
+from .preprocess_config import preprocessing_options
 
 
 def main():
@@ -53,6 +54,7 @@ def main():
     report = dict(start_utc=datetime.now(timezone.utc).isoformat(), checkpoint=str(args.checkpoint.resolve()),
                   checkpoint_sha256=checkpoint_hash, checkpoint_epoch=state["epoch"], threshold=args.threshold,
                   model_name=model_name,
+                  preprocessing=preprocessing_options(config),
                   sampled=sampled, age_stats=state["age_stats"], config=config,
                   torch=str(torch.__version__), cuda=torch.version.cuda, gpu=torch.cuda.get_device_name(0))
     json_save(output / "checkpoint_info.json", report)
@@ -60,7 +62,7 @@ def main():
         rows = read_rows(args.data_root, split)
         if args.allow_sample:
             rows = subset(rows, config.get(f"{split}_limit", 0), config["seed"])
-        dataset = FundusDataset(rows, state["age_stats"], config["image_size"])
+        dataset = FundusDataset(rows, state["age_stats"], config["image_size"], preprocessing=config)
         loader = make_loader(dataset, args.batch_size, args.workers)
         print(f"Evaluating {split}: {len(rows)} images", flush=True)
         names, probabilities, labels = evaluate(model, loader, device, config["amp"])

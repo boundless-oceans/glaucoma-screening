@@ -33,7 +33,7 @@ class ModelConfigChecks(unittest.TestCase):
         self.assertEqual(default_run_name("efficientnet_b2", True), "efficientnet_b2_smoke")
 
     def test_only_backbone_changes_in_full_config(self):
-        candidate = load_config()
+        candidate = load_config(ROOT / "configs" / "no_blackborder.json")
         baseline = load_config(ROOT / "configs" / "resnet18.json")
         self.assertEqual(candidate["model_name"], "efficientnet_b2")
         self.assertEqual(baseline["model_name"], "resnet18")

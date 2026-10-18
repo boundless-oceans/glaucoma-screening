@@ -1,5 +1,6 @@
 {
   "model_name": "resnet18",
+  "remove_black_border": false,
   "image_size": 224,
   "batch_size": 8,
   "num_workers": 2,
