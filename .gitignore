@@ -1,5 +1,6 @@
 /runs/
 /logs/
+/outputs/
 __pycache__/
 *.py[cod]
 *.pt
