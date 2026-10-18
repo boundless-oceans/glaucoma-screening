@@ -3,9 +3,11 @@ import atexit
 import math
 import os
 from pathlib import Path
+from .model_config import model_name_from_config
 
 
 def validate_config(config):
+    model_name_from_config(config)
     for key in ("image_size", "batch_size", "epochs", "save_every_steps", "cpu_threads"):
         if type(config[key]) is not int or config[key] <= 0:
             raise ValueError(f"{key} must be a positive integer")

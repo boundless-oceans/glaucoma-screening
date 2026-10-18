@@ -1,0 +1,10 @@
+{
+  "model_name": "resnet18",
+  "image_size": 224,
+  "batch_size": 8,
+  "num_workers": 2,
+  "epochs": 1,
+  "train_limit": 256,
+  "valid_limit": 128,
+  "test_limit": 16
+}

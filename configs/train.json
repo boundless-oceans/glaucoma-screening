@@ -1,4 +1,5 @@
 {
+  "model_name": "efficientnet_b2",
   "image_size": 320,
   "batch_size": 32,
   "num_workers": 4,

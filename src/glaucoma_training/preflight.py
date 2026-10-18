@@ -6,6 +6,7 @@ from pathlib import Path
 from .data_utils import age_value, fit_age, read_rows
 from .run_utils import validate_config
 from . import CONFIG_DIR, DEFAULT_DATA_ROOT
+from .model_config import load_config
 
 
 def main():
@@ -13,11 +14,9 @@ def main():
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
     parser.add_argument("--config", type=Path, default=CONFIG_DIR / "train.json")
     args = parser.parse_args()
-    defaults = json.loads((CONFIG_DIR / "train.json").read_text(encoding="utf-8-sig"))
-    overrides = json.loads(args.config.read_text(encoding="utf-8-sig"))
-    if set(overrides) - set(defaults):
-        raise ValueError("Unknown config keys")
-    validate_config({**defaults, **overrides})
+    config = load_config(args.config)
+    validate_config(config)
+    print(f"Model: {config['model_name']}; image_size={config['image_size']}; batch_size={config['batch_size']}")
     root = args.data_root.resolve()
     expected = {"train": 51396, "valid": 5849, "test": 5855}
     for split in ("train", "valid", "test"):
