@@ -1,6 +1,6 @@
 # 青光眼图像与年龄融合训练
 
-默认模型为 ImageNet 预训练 ResNet18，融合标准化年龄和年龄缺失标记。
+当前实验分支默认模型为 ImageNet 预训练 EfficientNet-B2，融合标准化年龄和年龄缺失标记。
 仅 train 参与训练，valid 用于验证和选择权重，test 只做预测，不新增人工标注。
 正式训练在 AutoDL 执行；本地只编辑代码及运行轻量检查。
 
@@ -17,14 +17,18 @@
     test.csv
   training/                       代码仓库根目录
     configs/
-      train.json                  正式训练参数
-      smoke.json                  小样本参数，只覆盖与正式配置不同的项
+      train.json                  EfficientNet-B2 正式训练参数
+      smoke.json                  EfficientNet-B2 小样本参数
+      resnet18.json               原 ResNet18 全量对照参数
+      resnet18_smoke.json         ResNet18 小样本对照参数
     src/glaucoma_training/
       __init__.py                 项目目录常量，不加载 PyTorch
       train.py                    训练、验证与断点恢复
       evaluate.py                 最佳模型验证及测试集预测
       predict.py                  仅生成测试集预测的独立入口
-      common.py                   模型、Dataset 和推理逻辑
+      common.py                   可选骨干、Dataset 和推理逻辑
+      model_config.py             配置合并、架构识别和默认实验目录
+      download_weights.py         在服务器预下载对应预训练权重
       data_utils.py               CSV、年龄处理与指标
       run_utils.py                配置检查、输出保护与进程锁
       preflight.py                上传后数据路径检查
@@ -34,7 +38,7 @@
       train.sh                    训练和续训入口
       test.sh                     模型评估和预测入口
     tests/                        自动化代码测试，不训练模型
-    enviroment.yml                服务器 Conda 环境
+    environment.yml                服务器 Conda 环境
     requirements.txt              使用现有镜像时补装的依赖
     README.md
     .gitignore
@@ -49,13 +53,48 @@ evaluate.py 是实际运行模型的入口，不是 tests 中的开发测试。
 代码按不区分大小写的文件名匹配原图，兼容 CSV 中 .jpg 与磁盘文件 .JPG 的差异。
 请上传完整新目录，不再运行旧版根目录中的 train.py / launch.py，也不要只上传零散文件。
 
+## 本分支的架构实验
+
+本分支支持 model_name=resnet18 或 efficientnet_b2，默认使用后者。
+EfficientNet-B2 仍与标准化年龄、年龄缺失标记拼接分类；预训练权重来自 torchvision 官方实现。
+当前只改变图像骨干：正式输入仍是 320×320、batch=32、同一增强、BCE 权重与学习率，未添加去黑边或更高分辨率。
+不预设新架构一定更好，需要用同一验证集、相近训练预算比较；T4 延迟也尚未测量。
+
+默认目录按架构隔离：
+
+| 配置 | 模型 | 默认实验目录 |
+| --- | --- | --- |
+| configs/train.json | EfficientNet-B2 | runs/efficientnet_b2 |
+| configs/smoke.json | EfficientNet-B2 小样本 | runs/efficientnet_b2_smoke |
+| configs/resnet18.json | ResNet18 对照 | runs/baseline |
+| configs/resnet18_smoke.json | ResNet18 小样本对照 | runs/smoke |
+
+同一分支也可以运行 ResNet18 对照，不必反复切分支：
+
+```bash
+bash scripts/train.sh --config configs/resnet18_smoke.json
+bash scripts/test.sh --smoke --run-dir runs/smoke
+```
+
+--smoke 和 --config 不能同时传入；小样本测试按检查点实际架构运行。
+
+全量对照则使用：
+
+```bash
+bash scripts/train.sh --config configs/resnet18.json --max-hours 3
+bash scripts/test.sh --config configs/resnet18.json
+```
+
+显式 --checkpoint 时，实际模型以权重内记录为准；--config 控制默认实验目录和配置日志，不会改变权重的架构。
+不要使用 B2 的默认命令续训旧 runs/baseline，恢复旧 ResNet18 任务时需传 configs/resnet18.json。
+
 ## 环境准备
 
 无卡模式也可以创建环境；有卡开机后才能验证 CUDA。
 
 ```bash
 cd /root/autodl-tmp/training
-conda env create -f enviroment.yml
+conda env create -f environment.yml
 conda activate glaucoma-cloud
 ```
 
@@ -76,7 +115,7 @@ preflight 不加载 PyTorch、不调用 GPU，也不完整解码图片，不能�
 首次需要下载官方 ImageNet 权重，可提前在当前环境下载，避免占用 GPU 时段：
 
 ```bash
-python -c "from torchvision.models import ResNet18_Weights; ResNet18_Weights.DEFAULT.get_state_dict(progress=True)"
+python -m glaucoma_training.download_weights
 ```
 
 此命令不训练、不调用 GPU。下载失败先解决网络，不要将 pretrained=false 当作正式替代方案。
@@ -101,13 +140,13 @@ bash scripts/train.sh --max-hours 3
 bash scripts/test.sh
 ```
 
-- 默认数据路径 /root/autodl-tmp/glaucoma_first，默认模型目录 training/runs/baseline。
+- 默认数据路径 /root/autodl-tmp/glaucoma_first，默认模型目录 training/runs/efficientnet_b2。
 - Shell 从自身位置找到代码和 configs，终端当前目录不影响默认路径；也可以使用脚本绝对路径启动。
 - 手动传入的相对 --config、--run-dir、--checkpoint 仍相对于终端当前目录，推荐传绝对路径。
 - train.sh 调用 launch，再启动训练模块；同一命令自动恢复 last.pt，不重复开始。
 - train.sh 固定跳过训练后的测试集推理；test.sh 单独加载 best.pt，评估 valid 并生成 test 的预测。
 - 至少完成一轮验证才会有 best.pt，未生成时测试入口会明确报错。
-- --smoke 对应 configs/smoke.json 和 runs/smoke；正式配置为 configs/train.json。
+- --smoke 对应 configs/smoke.json 和 runs/efficientnet_b2_smoke；正式配置为 configs/train.json，包含 model_name=efficientnet_b2。
 - 可用 `bash scripts/train.sh --config /配置绝对路径.json --run-dir /新实验绝对路径` 建立独立实验，不能同时传 --smoke。
 - 测试其他权重：`bash scripts/test.sh --checkpoint /权重绝对路径/best.pt`。
 
@@ -145,7 +184,7 @@ logs/
 ```bash
 tail -f "$(cat logs/latest_train.txt)/console.log"
 cat "$(cat logs/latest_train.txt)/status.json"
-cat runs/baseline/progress.json
+cat runs/efficientnet_b2/progress.json
 ```
 
 每 25 个训练批次及每轮最后一批会打印进度、loss 和学习率，每轮结束打印验证指标。
@@ -157,7 +196,7 @@ SIGKILL、系统 OOM 或主机掉电时来不及写最终状态，需要结合�
 ## 检查点与预测结果
 
 ```text
-runs/baseline/
+runs/efficientnet_b2/
   last.pt                         续训状态：模型、优化器、AMP、随机状态、下一批位置
   best.pt                         最佳验证模型参数
   progress.json                   最近一次成功保存的状态与位置
@@ -184,7 +223,8 @@ valid_thresholds.csv 记录 0.01～0.99 的验证阈值表现和 hard_label_auro
 第一次训练前即保存初始 last.pt，此后每 200 批、训练阶段结束前、验证结束后和正常停止时保存。
 正常暂停从下一批继续，强制停止只能恢复到最近一次已保存的批次。续训保持配置、CSV 和原图不变，
 保留 last.pt 和 best.pt；最佳模型丢失会报错。不要删除 .run.lock 来并发启动同一实验，进程退出会释放系统锁。
-相同配置的旧 state_dict 检查点仍可使用；移动目录不改变模型结构和权重键名。
+旧版缺少 model_name 的检查点按 ResNet18 识别；新检查点保存架构标记。
+评估按检查点选择骨干，续训拒绝将 ResNet18 权重载入 EfficientNet-B2；相同架构的旧权重键名保持兼容。
 
 ## 训练方案与验证范围
 
