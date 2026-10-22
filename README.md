@@ -3,6 +3,7 @@
 当前默认使用 EfficientNet-B2＋年龄融合，并开启保守去黑边。
 仅 train 参与训练，valid 用于验证和选择权重，test 只做预测，不新增人工标注。
 正式训练在 AutoDL 执行；本地只编辑代码及运行轻量检查。
+遵循最新比赛通知，不使用医学类预训练权重；本实验从我们用通用 ImageNet 初始化、官方 train 训练所得的最佳权重继续微调。
 
 ## 文档目录
 
@@ -11,6 +12,7 @@
 - [去黑边：预览、开关与检查点兼容](#black-border)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
+- [最佳权重短程微调](#finetune)
 - [后台运行与日志](#logging)
 - [检查点与预测结果](#checkpoints)
 - [训练方案与验证范围](#validation)
@@ -33,6 +35,8 @@
     ├── configs/
     │   ├── train.json                    # B2 正式训练，默认开启去黑边
     │   ├── smoke.json                    # B2 小样本，继承默认去黑边配置
+    │   ├── finetune.json                 # 最佳权重微调，1e-5、3轮
+    │   ├── finetune_smoke.json           # 保持320输入的小样本微调
     │   ├── no_blackborder.json           # B2 关闭去黑边的对照配置
     │   ├── resnet18.json                 # ResNet18 全量对照，不去黑边
     │   └── resnet18_smoke.json           # ResNet18 小样本，不去黑边
@@ -40,6 +44,7 @@
     │   └── glaucoma_training/
     │       ├── __init__.py               # 项目目录常量，不加载 PyTorch
     │       ├── train.py                  # 训练、验证与断点恢复
+    │       ├── finetune.py               # 初始权重兼容性和基线复验保护
     │       ├── evaluate.py               # 最佳模型验证及测试集预测
     │       ├── predict.py                # 仅生成测试集预测的独立入口
     │       ├── common.py                 # 可选骨干、Dataset 和推理逻辑
@@ -55,7 +60,9 @@
     │       └── launch.py                 # Shell 调度、日志与状态记录
     ├── scripts/
     │   ├── train.sh                      # 训练和续训入口
-    │   └── test.sh                       # 模型评估和预测入口
+    │   ├── test.sh                       # 模型评估和预测入口
+    │   ├── run_checks.py                 # 轻量测试，不导入PyTorch
+    │   └── check_finetune.py             # 服务器显式运行的微型模型集成检查
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
     ├── outputs/                          # 预处理预览等生成产物，不入 Git
@@ -325,17 +332,70 @@ configs/train.json 默认：320×320，batch=32，4 个读取进程，12 轮，A
 年龄空值、非有限值、<=0 或 >110 视为缺失，用训练数据中位数填补；均值和标准差仅从训练数据计算。
 图像特征与年龄、缺失标记拼接分类，默认 BCE pos_weight=1，不同时叠加多种不平衡处理。
 显存不足时在新实验配置中减小 batch_size；内存/数据加载问题可减小 num_workers。
-pretrained=false 和非零样本 limit 只用于流程调试。配置改变请建新实验目录，不要混用检查点。
+非零样本 limit 仅用于流程调试。微调配置 pretrained=false 表示不下载 ImageNet 初始化，必须从 --init-checkpoint 加载完整任务权重。配置改变请建新实验目录。
 原图解码可能成为性能瓶颈，跑通后再按 GPU 利用率决定是否建立缩放缓存。
 
-此前在 CPU 合成小样例上验证过训练/恢复流程。2026-10-18 合并前检查中，29 项轻量测试通过，
-19 个 Python 文件语法检查通过；该次检查未加载 PyTorch、未启动训练。当前尚未在 5090 实测。
+原版于2026-10-19在5090完成12轮，最佳第5轮AUROC为0.981308；次日独立评估复现。
+本次微调功能仅完成轻量检查，未在本地加载PyTorch或使用GPU；真实模型微调及恢复仍待服务器集成检查。
 数据顺序与增强按 seed、epoch、图片索引固定，跨 GPU/驱动/PyTorch 版本不保证逐位相同。
 最终仍需官方 PyTorch 2.10.0/torchvision 0.25.0、T4 16GB 环境核验，单图端到端 <=100ms 和模型 <=500MB 尚未实测。
 仅加载自己生成的可信权重。复赛按届时清单打包，不能把 last.pt 等整个 runs 目录直接当作提交模型包。
 
 后续早停、错误样本报告及不平衡处理实验仍在计划中，当前版本尚未实现早停和错误图片报告。
 本地计划位于 docs/，该目录被 Git 忽略，不随仓库发布。
+
+<a id="finetune"></a>
+
+## 最佳权重短程微调
+
+这是从 main 基线出发的独立实验，不启用分组学习率、正类加权、EMA或TTA。模型结构、320输入、去黑边、年龄处理、AMP及增强保持原版；学习率1e-5，统一AdamW，3轮余弦衰减。优化器和scaler重新初始化，训练轮数从0计；不是恢复原版last.pt。
+微调默认目录为 runs/efficientnet_b2_blackborder_finetune，小样本为 runs/efficientnet_b2_blackborder_smoke_finetune，不覆盖来源模型。
+
+先在服务器激活glaucoma-cloud环境，运行合成数据集成检查（它会真正训练微型ResNet18，禁止下载预训练权重）：
+
+```bash
+python scripts/check_finetune.py --device cuda
+```
+
+检查包含：源模型训练、微调前基线复验、预算暂停、恢复、保留较优模型，以及加载最佳权重生成预测。独立产物位于 outputs/check_finetune_<时间戳>/。可显式使用 --device cpu 在服务器无卡模式检查，不要在本地电脑运行模型集成脚本。
+
+以下假设旧版 best.pt 已保存在服务器这个路径；文件缺失时先从备份恢复，不要拿 last.pt 或分组/加权实验代替：
+
+```bash
+bash scripts/train.sh --config configs/finetune_smoke.json \
+  --init-checkpoint /root/autodl-tmp/training/runs/efficientnet_b2_blackborder/best.pt
+bash scripts/test.sh --smoke --run-dir runs/efficientnet_b2_blackborder_smoke_finetune
+```
+
+小样本只验证流程，保留320输入和batch32；子集AUROC不与完整0.9813比较，initial_validation.json明确记为subset_only。
+正式微调：
+
+```bash
+mkdir -p logs
+nohup bash scripts/train.sh --config configs/finetune.json \
+  --init-checkpoint /root/autodl-tmp/training/runs/efficientnet_b2_blackborder/best.pt \
+  --max-hours 3 >> logs/bootstrap_finetune.log 2>&1 &
+```
+
+第一步完整评估来源模型，AUROC及AUPRC默认必须与来源权重的best_metrics相差不超过1e-5，否则在优化器更新前停止。直接train模块的 --baseline-tolerance 仅允许0至0.001，排查差异前不要放宽门槛。
+源权重必须为完整数据模型，架构、数据CSV签名、输入和预处理必须兼容；年龄统计沿用源权重，完整分类头严格加载，不会重置为随机分类头。
+来源路径、SHA256、来源轮数及指标记录在last.pt、best.pt和initial_validation.json。第0轮先保存复验后的源模型为保底best；只有(AUROC,AUPRC)更优才替换。新best.pt的epoch表示微调轮数，0表示仍是初始模型，原轮数见initialization.source_epoch。
+best_manifest.json最后写入并记录best四个产物的哈希；微调恢复会检查完整性，损坏时明确报错，不悄悄继续。
+
+预算默认仍为3小时。完成返回0，到时断点保存暂停返回3，用户中断返回130。暂停后原命令可续训；也可以省略 --init-checkpoint，仅用新实验last.pt恢复。再次提供初始权重时必须与记录哈希一致，不能在续训时更换来源。
+
+正式评估：
+
+```bash
+bash scripts/test.sh --config configs/finetune.json
+# 无卡：显式使用CPU，不更改模型权重；float32与CUDA AMP概率可能略有差异
+bash scripts/test.sh --config configs/finetune.json --device cpu --workers 0
+# 按需只评估验证集；默认仍为valid+test
+bash scripts/test.sh --config configs/finetune.json --splits valid
+```
+
+完整评估目录最后写入manifest.json，记录来源、权重及预测哈希。只跑test不会重新计算valid指标，checkpoint_validation是保存时指标，不是本次复验结果。以test.sh打印的evaluation目录为准，避免拿错旧submission。
+CUDA/CPU真实推理兼容、短程微调是否提升以及T4端到端延迟，都需要服务器实测，轻量替身测试不能替代它们。
 
 <a id="development"></a>
 
@@ -344,7 +404,7 @@ pretrained=false 和非零样本 limit 只用于流程调试。配置改变请�
 本地在 training 根目录执行以下轻量测试，不会训练模型：
 
 ```bash
-python -B -m unittest discover -s tests -v
+python -B scripts/run_checks.py
 ```
 
 Git 仅位于 training/.git；数据、docs、outputs、logs、runs、缓存均不入库。提交信息用 `关键词: 改动总结`，分支用 `关键词/用途`。
