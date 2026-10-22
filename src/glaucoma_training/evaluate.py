@@ -23,11 +23,13 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--allow-sample", action="store_true")
+    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    parser.add_argument("--splits", nargs="+", choices=["valid", "test"], default=["valid", "test"])
     args = parser.parse_args()
     if not 0 <= args.threshold <= 1 or args.batch_size <= 0 or args.workers < 0:
         parser.error("Invalid threshold, batch-size or workers")
-    if not torch.cuda.is_available():
-        parser.error("CUDA unavailable. Run on a GPU instance.")
+    if args.device == "cuda" and not torch.cuda.is_available():
+        parser.error("CUDA unavailable. Use --device cpu or run on a GPU instance.")
     if not args.checkpoint.is_file():
         parser.error("best.pt not found. Finish at least one validation epoch, or supply --checkpoint.")
     output = protect_output(args.data_root, args.output_dir, directory=True)
@@ -48,7 +50,7 @@ def main():
         raise ValueError("CSV files do not match the checkpoint")
     output.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(config["cpu_threads"])
-    device = torch.device("cuda")
+    device = torch.device(args.device)
     model = FusionModel(model_name=model_name).to(device)
     model.load_state_dict(state["model"])
     report = dict(start_utc=datetime.now(timezone.utc).isoformat(), checkpoint=str(args.checkpoint.resolve()),
@@ -56,14 +58,18 @@ def main():
                   model_name=model_name,
                   preprocessing=preprocessing_options(config),
                   sampled=sampled, age_stats=state["age_stats"], config=config,
-                  torch=str(torch.__version__), cuda=torch.version.cuda, gpu=torch.cuda.get_device_name(0))
+                  initialization=state.get("initialization"),
+                  data_signature=state["data_signature"],
+                  device=str(device), splits=list(dict.fromkeys(args.splits)),
+                  torch=str(torch.__version__), cuda=torch.version.cuda,
+                  gpu=torch.cuda.get_device_name(0) if device.type == "cuda" else None)
     json_save(output / "checkpoint_info.json", report)
-    for split in ("valid", "test"):
+    for split in dict.fromkeys(args.splits):
         rows = read_rows(args.data_root, split)
         if args.allow_sample:
             rows = subset(rows, config.get(f"{split}_limit", 0), config["seed"])
         dataset = FundusDataset(rows, state["age_stats"], config["image_size"], preprocessing=config)
-        loader = make_loader(dataset, args.batch_size, args.workers)
+        loader = make_loader(dataset, args.batch_size, args.workers, device=device)
         print(f"Evaluating {split}: {len(rows)} images", flush=True)
         names, probabilities, labels = evaluate(model, loader, device, config["amp"])
         if names != [row["Image_name"] for row in rows]:
@@ -74,14 +80,21 @@ def main():
             json_save(output / "validation_metrics.json", result)
             write_predictions(output / "validation_predictions.csv", names, probabilities, args.threshold, labels)
             print("Validation metrics: " + json.dumps(result), flush=True)
+            report["validation"] = result
         else:
             filename = "DEBUG_predictions.csv" if sampled else "submission.csv"
             write_predictions(output / filename, names, probabilities, args.threshold)
+            report["prediction_file"] = filename
+            report["prediction_rows"] = len(names)
+            report["prediction_sha256"] = hashlib.sha256((output / filename).read_bytes()).hexdigest()
             print(f"Saved {len(rows)} test predictions: {output / filename}", flush=True)
             print("Test labels are unavailable; no test AUROC/accuracy can be computed.", flush=True)
     report["end_utc"] = datetime.now(timezone.utc).isoformat()
     report["status"] = "completed"
     json_save(output / "checkpoint_info.json", report)
+    # Completion/provenance marker is written last; absent means incomplete evaluation.
+    report["checkpoint_validation"] = state.get("best_metrics")
+    json_save(output / "manifest.json", report)
 
 
 if __name__ == "__main__":

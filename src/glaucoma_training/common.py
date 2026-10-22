@@ -68,10 +68,10 @@ class FusionModel(nn.Module):
         return self.head(torch.cat([self.backbone(image), age], dim=1)).squeeze(1)
 
 
-def make_loader(dataset, batch_size, workers, order=None, seed=42):
+def make_loader(dataset, batch_size, workers, order=None, seed=42, device=None):
     generator = torch.Generator().manual_seed(seed)
     return DataLoader(dataset, batch_size=batch_size, shuffle=False, sampler=order,
-                      num_workers=workers, pin_memory=torch.cuda.is_available(),
+                      num_workers=workers, pin_memory=(torch.device(device).type == "cuda" if device is not None else torch.cuda.is_available()),
                       generator=generator, persistent_workers=False)
 
 
@@ -125,7 +125,7 @@ def predict_checkpoint(checkpoint, root, output, device="cuda", batch_size=32, w
     model = FusionModel(model_name=model_name).to(device)
     model.load_state_dict(state["model"])
     dataset = FundusDataset(rows, state["age_stats"], config["image_size"], preprocessing=config)
-    loader = make_loader(dataset, batch_size, workers)
+    loader = make_loader(dataset, batch_size, workers, device=device)
     names, probabilities, _ = evaluate(model, loader, device, config["amp"])
     if names != [r["Image_name"] for r in rows]:
         raise ValueError("Predictions differ from test.csv row order")

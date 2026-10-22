@@ -8,6 +8,8 @@ from .preprocess_config import preprocessing_options
 
 
 def validate_config(config):
+    if type(config.get("finetune", False)) is not bool:
+        raise ValueError("finetune must be true or false")
     model_name_from_config(config)
     preprocessing_options(config)
     for key in ("image_size", "batch_size", "epochs", "save_every_steps", "cpu_threads"):

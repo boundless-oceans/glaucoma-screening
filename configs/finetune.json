@@ -1,0 +1,6 @@
+{
+  "finetune": true,
+  "pretrained": false,
+  "learning_rate": 0.00001,
+  "epochs": 3
+}

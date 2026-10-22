@@ -25,10 +25,13 @@ def checkpoint_model_name(state):
 
 
 def canonical_config(config):
-    return {**config, "model_name": model_name_from_config(config), **preprocessing_options(config)}
+    return {**config, "model_name": model_name_from_config(config), **preprocessing_options(config),
+            "finetune": config.get("finetune", False)}
 
 
-def default_run_name(model_name, smoke=False, remove_black_border=False):
+def default_run_name(model_name, smoke=False, remove_black_border=False, finetune=False):
+    if finetune:
+        return default_run_name(model_name, smoke, remove_black_border) + "_finetune"
     model_name_from_config({"model_name": model_name})
     if remove_black_border:
         return model_name + "_blackborder" + ("_smoke" if smoke else "")
@@ -42,6 +45,7 @@ def load_config(path=None):
     overrides = json.loads(Path(path or CONFIG_DIR / "train.json").read_text(encoding="utf-8-sig"))
     if not isinstance(overrides, dict):
         raise ValueError("Config must be a JSON object")
+    defaults.setdefault("finetune", False)
     unknown = set(overrides) - set(defaults)
     if unknown:
         raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")
