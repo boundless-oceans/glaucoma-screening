@@ -7,6 +7,8 @@ import unittest
 import json
 import hashlib
 import tempfile
+import contextlib
+import io
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,11 +117,13 @@ class FinetuneChecks(unittest.TestCase):
                 return 0
 
             args = ["launch", "train", "--config", str(ROOT / "configs/finetune.json"),
-                    "--run-dir", str(run), "--init-checkpoint", str(folder / "original.pt")]
+                    "--run-dir", str(run), "--init-checkpoint", str(folder / "original.pt"),
+                    "--baseline-tolerance", "0.0001"]
             with patch.object(launch, "CODE", folder), patch.object(sys, "argv", args), \
                     patch.object(launch.signal, "signal"), patch.object(launch.LoggedSession, "run", fake_run):
                 self.assertEqual(launch.main(), 3)
             self.assertIn("--init-checkpoint", commands[-1])
+            self.assertEqual(commands[-1][commands[-1].index("--baseline-tolerance") + 1], "0.0001")
             status = json.loads(next((folder / "logs").glob("*/status.json")).read_text())
             self.assertEqual((status["status"], status["exit_code"]), ("paused", 3))
 
@@ -135,6 +139,14 @@ class FinetuneChecks(unittest.TestCase):
             with patch.object(launch, "CODE", folder), patch.object(sys, "argv", args), \
                     patch.object(launch.signal, "signal"), patch.object(launch.LoggedSession, "run", stop):
                 self.assertEqual(launch.main(), 130)
+
+    def test_launcher_rejects_invalid_baseline_tolerance(self):
+        for value in ("nan", "inf", "-0.1", "0.01"):
+            with self.subTest(value=value), patch.object(sys, "argv", ["launch", "train", "--baseline-tolerance", value]), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    launch.main()
+                self.assertEqual(error.exception.code, 2)
 
     def best_fixture(self, folder, score=(0.985, 0.8)):
         best = dict(epoch=1, auroc=score[0], auprc_trapezoid=score[1])

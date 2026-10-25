@@ -377,7 +377,8 @@ nohup bash scripts/train.sh --config configs/finetune.json \
   --max-hours 3 >> logs/bootstrap_finetune.log 2>&1 &
 ```
 
-第一步完整评估来源模型，AUROC及AUPRC默认必须与来源权重的best_metrics相差不超过1e-5，否则在优化器更新前停止。直接train模块的 --baseline-tolerance 仅允许0至0.001，排查差异前不要放宽门槛。
+第一步完整评估来源模型，AUROC及AUPRC默认必须与来源权重的best_metrics相差不超过1e-5，否则在优化器更新前停止。train.sh和直接train模块均可用 --baseline-tolerance 显式设置0至0.001的容差，排查差异前不要放宽门槛。
+2026-10-25从5090迁到4090D后，源权重哈希、CSV签名、初始模型逐张量比较和年龄统计均一致；AUROC差约1.57e-5、AUPRC差约3.21e-5，混淆矩阵不变。对此次已核验迁移，可以在原微调启动命令追加 --baseline-tolerance 0.0001，复验通过后以4090D本次实测基线作为第0轮保底；这不是模型性能提升的证据。默认容差保持1e-5。
 源权重必须为完整数据模型，架构、数据CSV签名、输入和预处理必须兼容；年龄统计沿用源权重，完整分类头严格加载，不会重置为随机分类头。
 来源路径、SHA256、来源轮数及指标记录在last.pt、best.pt和initial_validation.json。第0轮先保存复验后的源模型为保底best；只有(AUROC,AUPRC)更优才替换。新best.pt的epoch表示微调轮数，0表示仍是初始模型，原轮数见initialization.source_epoch。
 best_manifest.json最后写入并记录best四个产物的哈希；微调恢复会检查完整性，损坏时明确报错，不悄悄继续。

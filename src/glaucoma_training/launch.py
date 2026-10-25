@@ -101,11 +101,15 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--init-checkpoint", type=Path)
+    parser.add_argument("--baseline-tolerance", type=float, default=0.00001,
+                        help="Explicit source AUROC/AUPRC reproduction tolerance; default 1e-5")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Evaluation device")
     parser.add_argument("--splits", nargs="+", choices=["valid", "test"], default=["valid", "test"])
     args = parser.parse_args()
     if not math.isfinite(args.max_hours) or args.max_hours < 0:
         parser.error("--max-hours must be finite and nonnegative")
+    if not math.isfinite(args.baseline_tolerance) or not 0 <= args.baseline_tolerance <= 0.001:
+        parser.error("--baseline-tolerance must be within [0, 0.001]")
     if not math.isfinite(args.threshold) or not 0 <= args.threshold <= 1:
         parser.error("--threshold must be within [0, 1]")
     if args.batch_size <= 0 or args.workers < 0:
@@ -166,7 +170,8 @@ def main():
             write_status(status_path, state)
             command = [sys.executable, "-u", "-X", "faulthandler", "-m", "glaucoma_training.train",
                         "--data-root", str(root), "--run-dir", str(run), "--config", str(config),
-                        "--max-hours", str(args.max_hours), "--skip-predict"]
+                        "--max-hours", str(args.max_hours), "--skip-predict",
+                        "--baseline-tolerance", str(args.baseline_tolerance)]
             if args.init_checkpoint:
                 command.extend(["--init-checkpoint", str(args.init_checkpoint.resolve())])
             child_code = session.run("training", command, accepted_codes=(0, 3, 130))
