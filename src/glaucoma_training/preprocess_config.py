@@ -6,6 +6,7 @@ PREPROCESS_DEFAULTS = {
     "black_border_threshold": 8,
     "black_border_margin": 0.02,
     "black_border_version": 1,
+    "jpeg_draft_size": 0,
 }
 
 
@@ -21,4 +22,7 @@ def preprocessing_options(config):
         raise ValueError("black_border_margin must be within [0, 0.1]")
     if type(options["black_border_version"]) is not int or options["black_border_version"] != 1:
         raise ValueError("Unsupported black_border_version")
+    draft = options["jpeg_draft_size"]
+    if type(draft) is not int or draft != 0 and not 64 <= draft <= 4096:
+        raise ValueError("jpeg_draft_size must be 0 (disabled) or an integer within [64, 4096]")
     return options

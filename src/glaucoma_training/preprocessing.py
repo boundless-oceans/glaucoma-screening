@@ -60,7 +60,28 @@ def prepare_image(image, size, config=None):
     """Shared deterministic EXIF/RGB/crop/letterbox path for all dataset splits."""
     if type(size) is not int or size <= 0:
         raise ValueError("Output image size must be a positive integer")
+    options = preprocessing_options(config or {})
+    draft = options["jpeg_draft_size"]
+    if draft and draft < size:
+        raise ValueError("jpeg_draft_size must be at least the final image size")
+    original_size = image.size
+    orientation = image.getexif().get(274, 1)
+    if orientation in (5, 6, 7, 8):
+        original_size = original_size[::-1]
+    # Must happen before exif_transpose/convert/load, which decode the pixels.
+    if draft and image.format in ("JPEG", "MPO"):
+        image.draft("RGB", (draft, draft))
     image = ImageOps.exif_transpose(image).convert("RGB")
-    image, info = crop_black_border(image, config or {})
+    decoded_size = image.size
+    image, info = crop_black_border(image, options)
+    decoded_box = info["crop_box"]
+    # Keep public crop coordinates in full-resolution, EXIF-oriented space.
+    if decoded_size != original_size:
+        sx, sy = original_size[0] / decoded_size[0], original_size[1] / decoded_size[1]
+        info["crop_box"] = [max(0, math.floor(decoded_box[0] * sx)), max(0, math.floor(decoded_box[1] * sy)),
+                            min(original_size[0], math.ceil(decoded_box[2] * sx)),
+                            min(original_size[1], math.ceil(decoded_box[3] * sy))]
+    info.update(original_size=list(original_size), decoded_size=list(decoded_size),
+                decoded_crop_box=list(decoded_box), jpeg_draft_applied=decoded_size != original_size)
     image = ImageOps.pad(image, (size, size), method=Image.Resampling.BILINEAR, color=(0, 0, 0))
     return image, info

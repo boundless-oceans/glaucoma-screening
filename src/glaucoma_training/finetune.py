@@ -16,7 +16,7 @@ def validate_source(source, config, signature, checkpoint, run):
     if any(original.get(k, 0) for k in ("train_limit", "valid_limit", "test_limit")):
         raise ValueError("Initial checkpoint must be a full-data model, not a smoke model")
     for key in ("image_size", "remove_black_border", "black_border_threshold", "black_border_margin",
-                "black_border_version", "pos_weight", "amp"):
+                "black_border_version", "jpeg_draft_size", "pos_weight", "amp"):
         if original[key] != config[key]:
             raise ValueError(f"Fine-tuning must preserve source {key}")
     if source["data_signature"] != signature:

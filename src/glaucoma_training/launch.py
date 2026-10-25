@@ -105,6 +105,7 @@ def main():
                         help="Explicit source AUROC/AUPRC reproduction tolerance; default 1e-5")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Evaluation device")
     parser.add_argument("--splits", nargs="+", choices=["valid", "test"], default=["valid", "test"])
+    parser.add_argument("--jpeg-draft-size", type=int, help="Validation-only experimental decoder override")
     args = parser.parse_args()
     if not math.isfinite(args.max_hours) or args.max_hours < 0:
         parser.error("--max-hours must be finite and nonnegative")
@@ -118,6 +119,8 @@ def main():
         parser.error("Choose --smoke OR --config")
     if args.init_checkpoint and args.mode != "train":
         parser.error("--init-checkpoint is for training only")
+    if args.jpeg_draft_size is not None and (args.mode != "test" or set(args.splits) != {"valid"}):
+        parser.error("Decoder override requires test --splits valid; training uses saved config")
     root = args.data_root.resolve()
     run = args.run_dir.resolve() if args.run_dir else None
     config = (args.config or CONFIG_DIR / ("smoke.json" if args.smoke else "train.json")).resolve()
@@ -137,7 +140,7 @@ def main():
         validate_config(resolved_config)
         sampled = any(resolved_config[k] for k in ("train_limit", "valid_limit", "test_limit"))
         profile_model = resolved_config["model_name"]
-        run = (run or CODE / "runs" / default_run_name(profile_model, sampled, resolved_config["remove_black_border"], resolved_config["finetune"])).resolve()
+        run = (run or CODE / "runs" / default_run_name(profile_model, sampled, resolved_config["remove_black_border"], resolved_config["finetune"], resolved_config["jpeg_draft_size"])).resolve()
         state.update(run_dir=str(run), model_profile=profile_model, config_path=str(config))
         write_status(status_path, state)
         write_status(session.directory / "effective_config.json", resolved_config)
@@ -204,6 +207,8 @@ def main():
                        "--device", args.device, "--splits", *args.splits]
             if args.smoke:
                 command.append("--allow-sample")
+            if args.jpeg_draft_size is not None:
+                command.extend(["--jpeg-draft-size", str(args.jpeg_draft_size)])
             session.run("evaluation and prediction", command)
             state["status"] = "completed"
             session.log(f"Results: {output}")
