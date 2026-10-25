@@ -5,13 +5,14 @@ from pathlib import Path
 import sys
 import unittest
 import json
+import hashlib
 import tempfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from glaucoma_training import launch
-from glaucoma_training.finetune import validate_source, verify_baseline
+from glaucoma_training.finetune import validate_source, verify_baseline, reconcile_best
 from glaucoma_training.model_config import canonical_config, default_run_name, load_config
 from glaucoma_training.run_utils import validate_config
 
@@ -134,6 +135,63 @@ class FinetuneChecks(unittest.TestCase):
             with patch.object(launch, "CODE", folder), patch.object(sys, "argv", args), \
                     patch.object(launch.signal, "signal"), patch.object(launch.LoggedSession, "run", stop):
                 self.assertEqual(launch.main(), 130)
+
+    def best_fixture(self, folder, score=(0.985, 0.8)):
+        best = dict(epoch=1, auroc=score[0], auprc_trapezoid=score[1])
+        (folder / "best.pt").write_bytes(b"newer-model")
+        (folder / "valid_predictions.csv").write_text("predictions")
+        (folder / "valid_thresholds.csv").write_text("thresholds")
+        (folder / "best_metrics.json").write_text(json.dumps(best))
+        state = dict(initialization={"sha256": "source"}, best_score=[0.9813, 0.7585],
+                     best_metrics={"epoch": 0}, epoch=0, next_batch=10, global_step=10,
+                     model={"weights": "last-state"}, optimizer={"step": 10}, torch_rng="saved-rng")
+        manifest = dict(status="completed", epoch=1, initialization=state["initialization"],
+                        files={name: hashlib.sha256((folder / name).read_bytes()).hexdigest()
+                               for name in ("best.pt", "valid_predictions.csv", "valid_thresholds.csv", "best_metrics.json")})
+        (folder / "best_manifest.json").write_text(json.dumps(manifest))
+        return state, manifest
+
+    def test_newer_best_survives_resume_from_older_last(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            state, _ = self.best_fixture(folder)
+            recovered = reconcile_best(folder, state)
+            self.assertEqual(recovered["best_score"], [0.985, 0.8])
+            for key in ("model", "optimizer", "torch_rng", "epoch", "next_batch", "global_step"):
+                self.assertEqual(recovered[key], state[key])
+            self.assertEqual(state["best_score"], [0.9813, 0.7585])
+            self.assertFalse((0.983, 0.79) > tuple(recovered["best_score"]))
+
+    def test_older_best_than_last_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            state, _ = self.best_fixture(folder, (0.97, 0.75))
+            with self.assertRaisesRegex(ValueError, "older/worse"):
+                reconcile_best(folder, state)
+
+    def test_partial_best_transaction_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            state, _ = self.best_fixture(folder)
+            (folder / "best_manifest.json").unlink()
+            with self.assertRaisesRegex(ValueError, "incomplete/corrupted"):
+                reconcile_best(folder, state)
+
+    def test_changed_best_file_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            state, _ = self.best_fixture(folder)
+            (folder / "best.pt").write_bytes(b"different-model")
+            with self.assertRaisesRegex(ValueError, "hash mismatch"):
+                reconcile_best(folder, state)
+
+    def test_wrong_initialization_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder = Path(temporary)
+            state, _ = self.best_fixture(folder)
+            state["initialization"] = {"sha256": "different-source"}
+            with self.assertRaisesRegex(ValueError, "another initialization"):
+                reconcile_best(folder, state)
 
 
 if __name__ == "__main__":

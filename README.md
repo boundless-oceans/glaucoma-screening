@@ -381,6 +381,8 @@ nohup bash scripts/train.sh --config configs/finetune.json \
 源权重必须为完整数据模型，架构、数据CSV签名、输入和预处理必须兼容；年龄统计沿用源权重，完整分类头严格加载，不会重置为随机分类头。
 来源路径、SHA256、来源轮数及指标记录在last.pt、best.pt和initial_validation.json。第0轮先保存复验后的源模型为保底best；只有(AUROC,AUPRC)更优才替换。新best.pt的epoch表示微调轮数，0表示仍是初始模型，原轮数见initialization.source_epoch。
 best_manifest.json最后写入并记录best四个产物的哈希；微调恢复会检查完整性，损坏时明确报错，不悄悄继续。
+如果best产物已经完整提交、last.pt尚未更新时中断，恢复会从已校验的best_metrics同步更高的最佳分数门槛，但训练权重、优化器、批次和随机数状态仍从last.pt恢复，避免较差模型覆盖新最佳。
+更换5090到4090D等硬件后，微调前复验仍执行原容差，不自动放宽。initial_validation.json记录设备、环境、AUROC/AUPRC差值以及completed或failed；复验不通过时先检查原因，不启动梯度更新。
 
 预算默认仍为3小时。完成返回0，到时断点保存暂停返回3，用户中断返回130。暂停后原命令可续训；也可以省略 --init-checkpoint，仅用新实验last.pt恢复。再次提供初始权重时必须与记录哈希一致，不能在续训时更换来源。
 

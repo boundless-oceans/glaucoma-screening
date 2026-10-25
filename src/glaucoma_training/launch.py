@@ -169,13 +169,17 @@ def main():
                         "--max-hours", str(args.max_hours), "--skip-predict"]
             if args.init_checkpoint:
                 command.extend(["--init-checkpoint", str(args.init_checkpoint.resolve())])
-            session.run("training", command, accepted_codes=(0, 3, 130))
+            child_code = session.run("training", command, accepted_codes=(0, 3, 130))
             progress_path = run / "progress.json"
             if progress_path.is_file():
                 state["training_progress"] = json.loads(progress_path.read_text(encoding="utf-8"))
                 state["status"] = state["training_progress"]["status"]
             else:
                 raise RuntimeError("Training ended without progress.json")
+            if state["status"] not in ("completed", "paused"):
+                raise RuntimeError(f"Child exited without a terminal training status: {state['status']}")
+            if child_code in (3, 130) and state["status"] != "paused":
+                raise RuntimeError("Child pause/interruption code disagrees with progress.json")
             if state["status"] == "paused":
                 progress = state["training_progress"]
                 code = 130 if progress.get("stop_reason") == "user_signal" else 3

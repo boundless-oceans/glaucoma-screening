@@ -22,7 +22,7 @@ from .common import (FusionModel, FundusDataset, atomic_save, data_signature, ev
                     read_rows, subset, write_predictions)
 from .run_utils import RunLock, protect_output, validate_config
 from .model_config import canonical_config, checkpoint_model_name, default_run_name, load_config
-from .finetune import validate_source, verify_baseline
+from .finetune import validate_source, verify_baseline, reconcile_best
 
 
 def main():
@@ -110,10 +110,10 @@ def main():
         if state["best_metrics"] is not None and not (run / "best.pt").is_file():
             raise FileNotFoundError("best.pt is missing. Restore it together with last.pt before resuming.")
         if config["finetune"] and state["best_metrics"] is not None:
-            manifest = json.loads((run / "best_manifest.json").read_text(encoding="utf-8"))
-            for name in ("best.pt", "valid_predictions.csv", "best_metrics.json", "valid_thresholds.csv"):
-                if hashlib.sha256((run / name).read_bytes()).hexdigest() != manifest["files"][name]:
-                    raise ValueError(f"Incomplete/corrupted best artifacts: {name}; restore a complete snapshot")
+            recovered = reconcile_best(run, state)
+            if recovered["best_score"] != state["best_score"]:
+                print("Recovered newer committed best metrics; training resumes from last.pt.", flush=True)
+            state = recovered
     age = state["age_stats"] if state else source["age_stats"] if source else fit_age(train_rows)
     model = FusionModel(pretrained=config["pretrained"] and state is None and source is None, model_name=config["model_name"]).to(device)
     if source:
@@ -206,10 +206,20 @@ def main():
         print("Validating source model BEFORE any optimizer step...", flush=True)
         names, probabilities, labels = evaluate(model, valid_loader, device, amp)
         baseline = metrics(labels, probabilities)
-        verify_baseline(baseline, initialization["validation"], sampled, args.baseline_tolerance)
+        baseline_report = dict(metrics=baseline, initialization=initialization, device=str(device),
+                               environment=env, tolerance=args.baseline_tolerance,
+                               comparison="subset_only" if sampled else "full_validation",
+                               metric_deltas={key: baseline[key] - initialization["validation"][key]
+                                              for key in ("auroc", "auprc_trapezoid")})
+        print("Initial validation: " + json.dumps(baseline_report), flush=True)
+        try:
+            verify_baseline(baseline, initialization["validation"], sampled, args.baseline_tolerance)
+        except ValueError:
+            json_save(run / "initial_validation.json", {**baseline_report, "status": "failed"})
+            raise
         baseline.update(epoch=0, global_step=0, origin="initial_checkpoint", sampled=sampled)
-        json_save(run / "initial_validation.json", dict(metrics=baseline, initialization=initialization,
-                  comparison="subset_only" if sampled else "full_validation_verified", tolerance=args.baseline_tolerance))
+        json_save(run / "initial_validation.json", {**baseline_report, "status": "completed",
+                  "comparison": "subset_only" if sampled else "full_validation_verified"})
         save_best(names, probabilities, labels, baseline)
         best_metrics, best_score = baseline, (baseline["auroc"], baseline["auprc_trapezoid"])
         baseline_ready = True
