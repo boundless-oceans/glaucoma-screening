@@ -10,6 +10,7 @@
 - [目录结构](#project-layout)
 - [模型配置与对照实验](#model-config)
 - [去黑边：预览、开关与检查点兼容](#black-border)
+- [输入管线提速对照](#data-pipeline)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
 - [最佳权重短程微调](#finetune)
@@ -37,6 +38,7 @@
     │   ├── smoke.json                    # B2 小样本，继承默认去黑边配置
     │   ├── finetune.json                 # 最佳权重微调，1e-5、3轮
     │   ├── finetune_smoke.json           # 保持320输入的小样本微调
+    │   ├── pipeline_draft.json          # 只开启JPEG缩略解码的候选配置
     │   ├── no_blackborder.json           # B2 关闭去黑边的对照配置
     │   ├── resnet18.json                 # ResNet18 全量对照，不去黑边
     │   └── resnet18_smoke.json           # ResNet18 小样本，不去黑边
@@ -51,6 +53,8 @@
     │       ├── model_config.py           # 配置合并、架构识别和实验目录
     │       ├── preprocess_config.py      # 版本化预处理参数及旧权重默认值
     │       ├── preprocessing.py          # 共享去黑边与缩放补边逻辑
+    │       ├── benchmark_pipeline.py     # CPU预处理测速与像素/裁剪差异
+    │       ├── benchmark_training.py     # 服务器训练吞吐诊断，不保存权重
     │       ├── preview_preprocessing.py  # CPU 生成裁剪前后对照图
     │       ├── download_weights.py       # 在服务器预下载官方预训练权重
     │       ├── data_utils.py             # CSV、年龄处理与指标
@@ -62,6 +66,8 @@
     │   ├── train.sh                      # 训练和续训入口
     │   ├── test.sh                       # 模型评估和预测入口
     │   ├── run_checks.py                 # 轻量测试，不导入PyTorch
+    │   ├── benchmark_pipeline.py         # CPU预处理对照入口
+    │   ├── benchmark_training.py         # 服务器GPU训练吞吐入口
     │   └── check_finetune.py             # 服务器显式运行的微型模型集成检查
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
@@ -336,13 +342,61 @@ configs/train.json 默认：320×320，batch=32，4 个读取进程，12 轮，A
 原图解码可能成为性能瓶颈，跑通后再按 GPU 利用率决定是否建立缩放缓存。
 
 原版于2026-10-19在5090完成12轮，最佳第5轮AUROC为0.981308；次日独立评估复现。
-本次微调功能仅完成轻量检查，未在本地加载PyTorch或使用GPU；真实模型微调及恢复仍待服务器集成检查。
+2026-10-25已通过4090D合成数据集成和真实小样本检查，并完成3轮正式微调；AUROC依次约0.975464、0.971716、0.971783，未超过复验的第0轮0.981324，因此保留原版最佳模型。没有把跨硬件的微小差异记作训练收益。
+本次缩略解码功能已完成61项轻量测试，不导入PyTorch、不使用本地GPU；真实管线速度、训练吞吐和完整验证差异仍待服务器实测。
 数据顺序与增强按 seed、epoch、图片索引固定，跨 GPU/驱动/PyTorch 版本不保证逐位相同。
 最终仍需官方 PyTorch 2.10.0/torchvision 0.25.0、T4 16GB 环境核验，单图端到端 <=100ms 和模型 <=500MB 尚未实测。
 仅加载自己生成的可信权重。复赛按届时清单打包，不能把 last.pt 等整个 runs 目录直接当作提交模型包。
 
 后续早停、错误样本报告及不平衡处理实验仍在计划中，当前版本尚未实现早停和错误图片报告。
 本地计划位于 docs/，该目录被 Git 忽略，不随仓库发布。
+
+<a id="data-pipeline"></a>
+
+## 输入管线提速对照
+
+本阶段只检查JPEG解码成本，不改变模型架构、年龄、数据角色、损失、增强或优化器。jpeg_draft_size默认0，继续完整解码；旧权重未保存该键时也按0处理。
+候选640会在EXIF转正、RGB转换、去黑边之前请求Pillow缩略解码。它不是逐像素无损变换，JPEG解码器可能选择不同缩放倍数；PNG、小图或极端宽高比图可能不缩小，以实际decoded_size为准。
+裁剪元数据保留完整分辨率、EXIF转正后的original_size和crop_box，并另存decoded_size、decoded_crop_box、jpeg_draft_applied，避免预览框误用缩略坐标。
+原始文件不会修改，不创建整套图片缓存。预览先处理新打开的JPEG，再另开文件读原图，防止提前解码导致draft无效。
+
+第一步，服务器激活glaucoma-cloud后，在training下运行CPU预处理对照（不会调用GPU）：
+
+```bash
+export OMP_NUM_THREADS=4
+python scripts/benchmark_pipeline.py --split train --count 128 --repeats 3 --draft-size 640
+python scripts/benchmark_pipeline.py --split valid --count 128 --repeats 3 --draft-size 640
+```
+
+默认按标签分层固定抽样，两种解码轮流先跑；不清系统缓存，因此不是冷盘测速。输出outputs/pipeline_<时间戳>/report.json、images.csv和full/draft成对预览。
+报告包含预处理耗时均值/p50/p95、真正缩略解码的张数、裁剪判定/回退原因变化、归一化裁剪框差异、RGB像素平均绝对差及大于8的像素占比。CPU预处理比值不能直接换算为整轮训练提速。
+检查full_reasons是否覆盖暗图、无外边框和其他回退；随机128张不保证覆盖所有罕见情况。已知特殊图片可用重复的 --include-name train_xxxxx.JPG 强制纳入（名字必须属于所选train/valid），或扩大count。工具不提供test采样，合成单测覆盖暗图、无黑边、EXIF旋转、奇数尺寸和极端宽高比。
+
+第二步，使用固定原版best.pt在同一4090D、相同batch和AMP设置下做完整valid A/B，不训练、不修改权重：
+
+```bash
+bash scripts/test.sh --checkpoint /root/autodl-tmp/training/runs/efficientnet_b2_blackborder/best.pt \
+  --splits valid
+bash scripts/test.sh --checkpoint /root/autodl-tmp/training/runs/efficientnet_b2_blackborder/best.pt \
+  --splits valid --jpeg-draft-size 640
+```
+
+显式解码override仅允许valid；同一次命令带test会拒绝，防止在未验收的输入上误出提交。checkpoint_info.json及manifest.json同时记录原checkpoint_config、实际config、preprocessing和experimental_decoder_override。两次评估各自独立目录，比较validation_metrics.json和validation_predictions.csv，不能把不同显卡的旧分数作为唯一对照。
+默认正常评估/预测始终读取权重保存的解码配置。训练与微调恢复检查包含jpeg_draft_size；不允许在同一run中无声更换解码器，也不允许用旧解码权重直接按新解码配置初始化微调。
+
+第三步，通过图像和指标检查后，在空闲4090D上比较短程真实训练吞吐（会执行前向、反向和AdamW更新，仅在内存中，不保存新模型、不改既有runs）：
+
+```bash
+python scripts/benchmark_training.py \
+  --checkpoint runs/efficientnet_b2_blackborder/best.pt --steps 50 --warmup 5 --workers 4
+python scripts/benchmark_training.py \
+  --checkpoint runs/efficientnet_b2_blackborder/best.pt --steps 50 --warmup 5 --workers 4 --order draft full
+```
+
+两臂从同一权重、种子、训练索引与增强开始，重新创建优化器；先5批预热，再计50批，统计秒/批、图/秒、AMP有效更新数与显存。计时包含数据交付、传输和训练计算，不含初始化、存盘和验证；反向顺序重测用于观察系统缓存偏差。不要并行运行两个测速进程，也不要在正式训练旁边测速。
+输出outputs/throughput_<时间戳>/report.json。它不是正式训练，不提供效果结论，也不是比赛T4单图100ms验收。GPU脚本尚待服务器实测，本地只检查语法和不依赖框架的逻辑。
+
+只有实际节省时间、图像检查和完整验证没有明显退化后，才考虑启用configs/pipeline_draft.json重新训练；默认仍关闭。新实验目录为runs/efficientnet_b2_blackborder_draft640，不覆盖原版。当前没有自动启动这个训练，也没有建立全量缓存或启用persistent_workers/cudnn.benchmark等其他优化。
 
 <a id="finetune"></a>
 
