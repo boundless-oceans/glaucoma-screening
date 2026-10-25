@@ -59,7 +59,7 @@ def main():
     sampled = any(config[k] for k in ("train_limit", "valid_limit", "test_limit"))
     root = args.data_root.resolve()
     run = (args.run_dir or PROJECT_ROOT / "runs" / default_run_name(
-        config["model_name"], sampled, config["remove_black_border"], config["finetune"])).resolve()
+        config["model_name"], sampled, config["remove_black_border"], config["finetune"], config["jpeg_draft_size"])).resolve()
     try:
         protect_output(root, run, directory=True)
     except ValueError as error:

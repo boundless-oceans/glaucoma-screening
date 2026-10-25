@@ -20,7 +20,7 @@ from glaucoma_training.run_utils import protect_output
 
 
 class EvaluationWorkflowChecks(unittest.TestCase):
-    def exercise(self, splits):
+    def exercise(self, splits, draft_size=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             data = root / "data"
@@ -63,6 +63,8 @@ class EvaluationWorkflowChecks(unittest.TestCase):
             output = root / "evaluation"
             argv = ["evaluate", "--data-root", str(data), "--checkpoint", str(checkpoint),
                     "--output-dir", str(output), "--device", "cpu", "--splits", *splits]
+            if draft_size is not None:
+                argv.extend(["--jpeg-draft-size", str(draft_size)])
             with patch.object(sys, "argv", argv):
                 namespace["main"]()
             manifest = json.loads((output / "manifest.json").read_text())
@@ -78,6 +80,10 @@ class EvaluationWorkflowChecks(unittest.TestCase):
                 self.assertFalse((output / "submission.csv").exists())
             self.assertEqual((output / "validation_metrics.json").exists(), "valid" in splits)
             self.assertEqual(manifest["status"], "completed")
+            self.assertEqual(manifest["experimental_decoder_override"], draft_size is not None)
+            if draft_size is not None:
+                self.assertEqual(manifest["preprocessing"]["jpeg_draft_size"], draft_size)
+                self.assertEqual(state["config"]["jpeg_draft_size"], 0)
 
     def test_cpu_test_only_provenance(self):
         self.exercise(["test"])
@@ -87,6 +93,14 @@ class EvaluationWorkflowChecks(unittest.TestCase):
 
     def test_cpu_both_splits_deduplicate_requests(self):
         self.exercise(["valid", "test", "test"])
+
+    def test_experimental_decoder_is_recorded_without_modifying_checkpoint_config(self):
+        self.exercise(["valid"], 640)
+
+    def test_experimental_decoder_cannot_generate_test_predictions(self):
+        with self.assertRaises(SystemExit) as error:
+            self.exercise(["test"], 640)
+        self.assertEqual(error.exception.code, 2)
 
 
 if __name__ == "__main__":

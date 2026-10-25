@@ -29,7 +29,10 @@ def canonical_config(config):
             "finetune": config.get("finetune", False)}
 
 
-def default_run_name(model_name, smoke=False, remove_black_border=False, finetune=False):
+def default_run_name(model_name, smoke=False, remove_black_border=False, finetune=False, jpeg_draft_size=0):
+    preprocessing_options({"jpeg_draft_size": jpeg_draft_size})
+    if jpeg_draft_size:
+        return default_run_name(model_name, smoke, remove_black_border, finetune) + f"_draft{jpeg_draft_size}"
     if finetune:
         return default_run_name(model_name, smoke, remove_black_border) + "_finetune"
     model_name_from_config({"model_name": model_name})
@@ -46,6 +49,7 @@ def load_config(path=None):
     if not isinstance(overrides, dict):
         raise ValueError("Config must be a JSON object")
     defaults.setdefault("finetune", False)
+    defaults.setdefault("jpeg_draft_size", 0)
     unknown = set(overrides) - set(defaults)
     if unknown:
         raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")

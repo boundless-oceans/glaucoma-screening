@@ -40,8 +40,10 @@ def main():
     records = []
     for index, row in enumerate(rows):
         with Image.open(row["path"]) as source:
-            original = ImageOps.exif_transpose(source).convert("RGB")
             processed, info = prepare_image(source, config["image_size"], config)
+        # A fresh handle is required: loading a preview first disables JPEG draft.
+        with Image.open(row["path"]) as source:
+            original = ImageOps.exif_transpose(source).convert("RGB")
         before = Image.new("RGB", (tile, tile), (0, 0, 0))
         contained = ImageOps.contain(original, (tile, tile), Image.Resampling.BILINEAR)
         offset_x, offset_y = (tile - contained.width) // 2, (tile - contained.height) // 2

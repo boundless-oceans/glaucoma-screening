@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--allow-sample", action="store_true")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--splits", nargs="+", choices=["valid", "test"], default=["valid", "test"])
+    parser.add_argument("--jpeg-draft-size", type=int, help="Experimental decoder override; valid only")
     args = parser.parse_args()
     if not 0 <= args.threshold <= 1 or args.batch_size <= 0 or args.workers < 0:
         parser.error("Invalid threshold, batch-size or workers")
@@ -41,7 +42,17 @@ def main():
     checkpoint_hash = hashlib.sha256(content).hexdigest()
     state = torch.load(io.BytesIO(content), map_location="cpu", weights_only=True)
     del content
-    config = state["config"]
+    config = dict(state["config"])
+    if args.jpeg_draft_size is not None:
+        if set(args.splits) != {"valid"}:
+            parser.error("Experimental decoder override is restricted to --splits valid")
+        config["jpeg_draft_size"] = args.jpeg_draft_size
+        try:
+            preprocessing_options(config)
+            if args.jpeg_draft_size and args.jpeg_draft_size < config["image_size"]:
+                raise ValueError("jpeg-draft-size must be at least the model image size")
+        except ValueError as error:
+            parser.error(str(error))
     model_name = checkpoint_model_name(state)
     sampled = any(config.get(k, 0) for k in ("train_limit", "valid_limit", "test_limit"))
     if sampled and not args.allow_sample:
@@ -59,6 +70,7 @@ def main():
                   preprocessing=preprocessing_options(config),
                   sampled=sampled, age_stats=state["age_stats"], config=config,
                   initialization=state.get("initialization"),
+                  checkpoint_config=state["config"], experimental_decoder_override=args.jpeg_draft_size is not None,
                   data_signature=state["data_signature"],
                   device=str(device), splits=list(dict.fromkeys(args.splits)),
                   torch=str(torch.__version__), cuda=torch.version.cuda,
