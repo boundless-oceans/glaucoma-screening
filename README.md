@@ -11,6 +11,7 @@
 - [模型配置与对照实验](#model-config)
 - [去黑边：预览、开关与检查点兼容](#black-border)
 - [输入管线提速对照](#data-pipeline)
+- [局部区域定位与预览](#local-roi)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
 - [最佳权重短程微调](#finetune)
@@ -39,6 +40,7 @@
     │   ├── finetune.json                 # 最佳权重微调，1e-5、3轮
     │   ├── finetune_smoke.json           # 保持320输入的小样本微调
     │   ├── pipeline_draft.json          # 只开启JPEG缩略解码的候选配置
+    │   ├── local_roi.json               # 独立ROI预览策略，不是训练配置
     │   ├── no_blackborder.json           # B2 关闭去黑边的对照配置
     │   ├── resnet18.json                 # ResNet18 全量对照，不去黑边
     │   └── resnet18_smoke.json           # ResNet18 小样本，不去黑边
@@ -55,6 +57,9 @@
     │       ├── preprocessing.py          # 共享去黑边与缩放补边逻辑
     │       ├── benchmark_pipeline.py     # CPU预处理测速与像素/裁剪差异
     │       ├── benchmark_training.py     # 服务器训练吞吐诊断，不保存权重
+    │       ├── roi_geometry.py           # 候选框、坐标映射和回退，纯CPU
+    │       ├── gradcam.py                # 冻结模型的正类logit Grad-CAM
+    │       ├── preview_local_roi.py      # 服务器定位与对照图，不训练
     │       ├── preview_preprocessing.py  # CPU 生成裁剪前后对照图
     │       ├── download_weights.py       # 在服务器预下载官方预训练权重
     │       ├── data_utils.py             # CSV、年龄处理与指标
@@ -68,6 +73,8 @@
     │   ├── run_checks.py                 # 轻量测试，不导入PyTorch
     │   ├── benchmark_pipeline.py         # CPU预处理对照入口
     │   ├── benchmark_training.py         # 服务器GPU训练吞吐入口
+    │   ├── check_local_roi.py            # 服务器Grad-CAM模型集成检查
+    │   ├── preview_local_roi.py          # 候选ROI预览入口
     │   └── check_finetune.py             # 服务器显式运行的微型模型集成检查
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
@@ -343,7 +350,8 @@ configs/train.json 默认：320×320，batch=32，4 个读取进程，12 轮，A
 
 原版于2026-10-19在5090完成12轮，最佳第5轮AUROC为0.981308；次日独立评估复现。
 2026-10-25已通过4090D合成数据集成和真实小样本检查，并完成3轮正式微调；AUROC依次约0.975464、0.971716、0.971783，未超过复验的第0轮0.981324，因此保留原版最佳模型。没有把跨硬件的微小差异记作训练收益。
-本次缩略解码功能已完成61项轻量测试，不导入PyTorch、不使用本地GPU；真实管线速度、训练吞吐和完整验证差异仍待服务器实测。
+缩略解码已在4090D完成12轮训练及独立评估，最佳第4轮AUROC 0.9815453817、AUPRC 0.7907557093，耗时1小时45分钟；独立评估精确复现。两种顺序的短程吞吐对照均约3.09倍，不能等同于T4推理验收或其他硬件的整轮提速。
+当前局部预览新增几何、回退及禁止test预览的检查，全部73项轻量测试通过，不导入PyTorch或使用本地GPU；真实Grad-CAM及候选定位可靠性仍待服务器检查。
 数据顺序与增强按 seed、epoch、图片索引固定，跨 GPU/驱动/PyTorch 版本不保证逐位相同。
 最终仍需官方 PyTorch 2.10.0/torchvision 0.25.0、T4 16GB 环境核验，单图端到端 <=100ms 和模型 <=500MB 尚未实测。
 仅加载自己生成的可信权重。复赛按届时清单打包，不能把 last.pt 等整个 runs 目录直接当作提交模型包。
@@ -396,7 +404,51 @@ python scripts/benchmark_training.py \
 两臂从同一权重、种子、训练索引与增强开始，重新创建优化器；先5批预热，再计50批，统计秒/批、图/秒、AMP有效更新数与显存。计时包含数据交付、传输和训练计算，不含初始化、存盘和验证；反向顺序重测用于观察系统缓存偏差。不要并行运行两个测速进程，也不要在正式训练旁边测速。
 输出outputs/throughput_<时间戳>/report.json。它不是正式训练，不提供效果结论，也不是比赛T4单图100ms验收。GPU脚本尚待服务器实测，本地只检查语法和不依赖框架的逻辑。
 
-只有实际节省时间、图像检查和完整验证没有明显退化后，才考虑启用configs/pipeline_draft.json重新训练；默认仍关闭。新实验目录为runs/efficientnet_b2_blackborder_draft640，不覆盖原版。当前没有自动启动这个训练，也没有建立全量缓存或启用persistent_workers/cudnn.benchmark等其他优化。
+configs/pipeline_draft.json已由用户启动并完成上述训练与独立评估。默认train.json仍保持完整解码；新模型的解码参数保存在权重中，后续预览会自动沿用640。没有建立全量缓存，也未启用persistent_workers/cudnn.benchmark等额外优化。
+
+<a id="local-roi"></a>
+
+## 局部区域定位与预览
+
+这一阶段只做候选定位，不训练局部分支，不修改现有模型、推理提交或数据划分。
+Grad-CAM按正类logit对最后卷积特征的梯度生成粗略关注图：[原论文](https://arxiv.org/abs/1610.02391)。当前B2的融合头含年龄及非线性，因此使用真实特征梯度，不把最后线性层权重直接当作普通CAM。
+所有图片都解释同一正类logit，不根据真值标签或预测类别更换目标。模型eval、参数冻结，只有目标特征到分类分数的梯度图；没有优化器，不更新参数或BN统计。诊断采用FP32，不冒充原AMP评估概率。
+关注图不是经过标注验证的视盘检测器，也不是人工标注。进入局部训练前必须检查偏移、截断和回退情况，不能因为有彩色热图就认为定位正确。
+
+先在服务器激活glaucoma-cloud，在新版代码目录执行模型集成检查（不下载权重，不训练）：
+
+```bash
+export OMP_NUM_THREADS=4
+python scripts/check_local_roi.py --device cuda
+```
+
+脚本先检查可手算梯度的微型模型，再检查ResNet18及B2的热图形状、重复性、参数/BN不变、hook清理与模式恢复。仅在服务器执行；本地轻量单测不导入PyTorch。这一真实框架检查当前尚未执行，服务器已由用户关闭。
+
+通过后，以已归档的新B2最佳模型为固定来源，生成24张训练图的预览：
+
+```bash
+python scripts/preview_local_roi.py \
+  --checkpoint /root/autodl-tmp/training_pipeline/training/runs/efficientnet_b2_blackborder_draft640/best.pt \
+  --split train --count 24
+```
+
+源权重SHA256应为8db9d71c2c86b8c33ce198ef87b8d510ff1eb9753989c0be1b04880dfff46f2c；工具读取实际权重哈希、数据CSV签名、原模型配置、年龄统计和来源轮数，不使用当前默认配置覆盖它们，不接受调试权重。
+默认正负各约一半，仅便于人工检查；这不是训练采样方案，也不报告子集AUROC。可用 --sampling random 改为随机样本，用重复 --include-name 加入暗图或特殊尺寸；--split仅允许train/valid，不提供test。
+ROI策略独立保存在configs/local_roi.json，不能把它传给train.sh的--config。
+
+固定策略先屏蔽letterbox与黑色背景，在有效内容内找边长为短边60%的最大关注质量窗口；质量相同时选更靠近关注重心的窗口，避免总偏向左上。候选至少覆盖55%的正关注质量、相对均匀分布的集中度比值至少1.2、窗口有效前景至少50%，否则回退global_only。
+这些比例是待检验的几何启发式，不是定位置信度或医学诊断标准。空图、非有限热图、暗图/稀疏/异常裁剪回退也不会产生局部候选。不要依据少数valid难例反复改阈值并宣称获得独立验证。
+
+坐标沿model输入→精确Pillow补边内容区域→decoded_crop_box→EXIF转正后的完整原图映射；局部图从重新打开的完整原图裁取，不放大320输入冒充细节。
+输出到独立outputs/local_roi_<时间戳>/：
+
+- report.json记录每张图的坐标、回退原因、关注质量比例、来源和状态；完成时status=completed。
+- preview_01.jpg等每页4张，每行依次为原图及绿色候选框、模型输入的热力图及候选框、局部视图。橙框表示被回退规则拒绝的候选；回退时第三栏明确显示全图路径。
+- heatmaps/保存FP32原始热图npz，供复核；不是训练缓存。默认不保存全部裁剪图。
+- --save-crops可额外保存被接受的384px检查图，仍不作为人工标注或已验收训练输入。
+
+报告中的preprocess_and_cam_seconds包括读图、预处理、传输及特征梯度诊断，不包括完整原图重读与绘图；它不是最终T4端到端验收。尚未证明单图100ms可满足，也未加入全量ROI缓存、局部分类器或融合分数。
+本地只完成合成几何、回退、坐标、预览及旧功能回归检查，真实模型集成、真实图像定位与耗时检查留到下次服务器开机后进行。
 
 <a id="finetune"></a>
 
