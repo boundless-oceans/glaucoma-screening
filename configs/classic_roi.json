@@ -1,7 +1,9 @@
 {
-  "classic_roi_version": 1,
+  "classic_roi_version": 2,
   "probe_size": 512,
   "size_fraction": 0.65,
   "min_peak_score": 0.32,
-  "min_peak_ratio": 1.08
+  "min_peak_ratio": 1.08,
+  "rim_start_radius": 0.8,
+  "min_rim_dark_support": 0.03
 }

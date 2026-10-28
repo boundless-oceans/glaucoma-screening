@@ -4,10 +4,10 @@ import sys
 import unittest
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageOps, ImageFilter
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from glaucoma_training.classic_roi import classic_options, locate_classic_roi
+from glaucoma_training.classic_roi import classic_options, locate_classic_roi, square_extrema
 from glaucoma_training.preprocessing import prepare_image
 
 
@@ -56,6 +56,43 @@ class ClassicRoiChecks(unittest.TestCase):
             with self.assertRaises(ValueError): classic_options(config)
         image, info = self.fixture()
         with self.assertRaises(ValueError): locate_classic_roi(image, info)
+
+    def test_fast_extrema_matches_pillow_including_edges(self):
+        rng = np.random.default_rng(20261028)
+        for shape in ((31, 27), (32, 32)):
+            pixels = rng.integers(0, 256, shape, dtype=np.uint8)
+            for radius in (0, 1, 3, 6):
+                for maximum in (False, True):
+                    filter_type = ImageFilter.MaxFilter if maximum else ImageFilter.MinFilter
+                    # Radius zero is the identity; some Pillow builds cannot rank-filter size 1.
+                    expected = pixels if radius == 0 else np.asarray(Image.fromarray(pixels).filter(filter_type(radius * 2 + 1)))
+                    np.testing.assert_array_equal(square_extrema(pixels, radius, maximum), expected)
+                    binary = pixels > 127
+                    expected_binary = binary if radius == 0 else np.asarray(Image.fromarray(binary.astype(np.uint8) * 255).filter(
+                        filter_type(radius * 2 + 1))) > 0
+                    np.testing.assert_array_equal(square_extrema(binary, radius, maximum), expected_binary)
+
+    def test_fast_backend_preserves_v1_score_and_geometry(self):
+        image, info = self.fixture()
+        policy = dict(probe_size=256, classic_roi_version=1)
+        first, heat = locate_classic_roi(image, info, policy, backend="pillow")
+        second, other = locate_classic_roi(image, info, policy, backend="fast")
+        self.assertEqual(first, second)
+        np.testing.assert_array_equal(heat, other)
+
+    def test_v2_rim_guard_does_not_reject_every_bright_structure(self):
+        for point, near_rim in (((22, 128), True), ((80, 128), False)):
+            original = Image.new("RGB", (256, 256), "black")
+            draw = ImageDraw.Draw(original)
+            draw.ellipse((10, 10, 246, 246), fill=(100, 50, 20))
+            x, y = point
+            draw.ellipse((x - 14, y - 16, x + 14, y + 16), fill=(240, 210, 120))
+            image, info = prepare_image(original, 256)
+            old, _ = locate_classic_roi(image, info, dict(probe_size=256, classic_roi_version=1))
+            new, _ = locate_classic_roi(image, info, dict(probe_size=256, classic_roi_version=2))
+            self.assertFalse(old["fallback"], old)
+            self.assertEqual(new["fallback"], near_rim, new)
+            if near_rim: self.assertEqual(new["reason"], "rim_brightness_without_structure")
 
 
 if __name__ == "__main__":

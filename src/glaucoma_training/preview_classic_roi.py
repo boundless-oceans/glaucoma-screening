@@ -27,6 +27,8 @@ def main():
     parser.add_argument("--count", type=int, default=32)
     parser.add_argument("--seed", type=int, default=20261028)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--exclude-report", action="append", default=[], type=Path,
+                        help="Additional completed TRAIN reports to exclude from unseen_train")
     args = parser.parse_args()
     if not 2 <= args.count <= 64 or args.seed < 0:
         parser.error("count must be 2..64; seed must be nonnegative")
@@ -49,13 +51,23 @@ def main():
         rows = [lookup[name] for name in reference_names]
     else:
         excluded = set(reference_names)
+        for path in args.exclude_report:
+            previous = json.loads(path.read_bytes())
+            if previous.get("status") != "completed" or previous.get("split") != "train" or \
+                    previous["data_signature"] != reference["data_signature"]:
+                parser.error("Exclusions must be completed TRAIN reports from the same dataset")
+            excluded.update(r["image_name"].casefold() for r in previous["images"])
         rows = preview_rows([r for r in all_rows if r["Image_name"].casefold() not in excluded],
                             args.count, args.seed, balanced=True)
+    if args.exclude_report and args.sampling != "unseen_train":
+        parser.error("--exclude-report is only for unseen_train")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     output = protect_output(args.data_root, args.output_dir or PROJECT_ROOT / "outputs" / ("classic_roi_" + stamp), directory=True)
     output.mkdir(parents=True, exist_ok=False)
     (output / "crops").mkdir()
-    report = dict(status="running", split="train", method="classic_brightness_contrast_v1",
+    report = dict(status="running", split="train", method=f"classic_brightness_contrast_v{policy['classic_roi_version']}",
+                  extrema_backend="fast", excluded_reports=[dict(path=str(p.resolve()),
+                      sha256=hashlib.sha256(p.read_bytes()).hexdigest()) for p in args.exclude_report],
                   sampling=args.sampling, seed=args.seed if args.sampling != "reference" else reference["seed"],
                   policy=policy, preprocessing_config=config,
                   reference_report=str(args.reference_report.resolve()), reference_sha256=hashlib.sha256(raw).hexdigest(),
