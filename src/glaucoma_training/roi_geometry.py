@@ -149,7 +149,7 @@ def preview_rows(rows, count, seed, balanced=True, include_names=()):
     return chosen
 
 
-def preview_strip(original, processed, heatmap, selection, title, tile=224):
+def preview_strip(original, processed, heatmap, selection, title, tile=224, heat_title="Positive-logit Grad-CAM"):
     """Original/ROI, diagnostic heatmap and local view. No image files modified."""
     canvas = Image.new("RGB", (tile * 3, tile + 42), (245, 245, 245))
     draw = ImageDraw.Draw(canvas)
@@ -181,7 +181,7 @@ def preview_strip(original, processed, heatmap, selection, title, tile=224):
         local = original.crop(selection["roi_box"])
         local_title = "Candidate local view"
     for index, (image, label) in enumerate([(first, "Original / green=accepted ROI"),
-                                           (overlay, "Positive-logit Grad-CAM"), (local, local_title)]):
+                                           (overlay, heat_title), (local, local_title)]):
         draw.text((index * tile + 4, 20), label, fill="black")
         canvas.paste(ImageOps.pad(image, (tile, tile), method=Image.Resampling.BILINEAR, color="black"),
                      (index * tile, 42))
