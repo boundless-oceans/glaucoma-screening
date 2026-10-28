@@ -3,7 +3,7 @@
 当前默认使用 EfficientNet-B2＋年龄融合，并开启保守去黑边。
 仅 train 参与训练，valid 用于验证和选择权重，test 只做预测，不新增人工标注。
 正式训练在 AutoDL 执行；本地只编辑代码及运行轻量检查。
-遵循最新比赛通知，不使用医学类预训练权重；本实验从我们用通用 ImageNet 初始化、官方 train 训练所得的最佳权重继续微调。
+遵循最新比赛通知，不使用医学类预训练权重。全图参考沿用官方train训练得到的最佳模型；新增局部分支从通用ImageNet权重初始化，分别记录实验。
 
 ## 文档目录
 
@@ -13,6 +13,7 @@
 - [输入管线提速对照](#data-pipeline)
 - [局部区域定位与预览](#local-roi)
 - [传统图像候选定位原型](#classic-roi)
+- [冻结全图模型与B0局部分支训练](#local-training)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
 - [最佳权重短程微调](#finetune)
@@ -43,6 +44,8 @@
     │   ├── pipeline_draft.json          # 只开启JPEG缩略解码的候选配置
     │   ├── local_roi.json               # 独立ROI预览策略，不是训练配置
     │   ├── classic_roi.json             # 传统亮区候选定位固定策略
+    │   ├── local_b0.json                # B0纯视觉局部分支，384输入、8轮
+    │   ├── local_b0_smoke.json          # 保持局部预处理的小样本配置
     │   ├── no_blackborder.json           # B2 关闭去黑边的对照配置
     │   ├── resnet18.json                 # ResNet18 全量对照，不去黑边
     │   └── resnet18_smoke.json           # ResNet18 小样本，不去黑边
@@ -65,6 +68,11 @@
     │       ├── roi_audit.py              # 汇总候选接受比例、拒绝条件与诊断耗时
     │       ├── classic_roi.py            # 传统亮度/对比候选，无模型
     │       ├── preview_classic_roi.py    # 仅train原型预览与固定样本检查
+    │       ├── benchmark_classic_roi.py  # CPU滤波等价性、固定规则A/B与计时
+    │       ├── roi_cache.py             # 坐标签名、源图核验与局部解码
+    │       ├── build_roi_cache.py       # CPU生成可恢复坐标缓存
+    │       ├── fusion_utils.py          # 固定概率平均与名称/标签对齐
+    │       ├── evaluate_fusion.py       # 全图、局部及等权融合评估
     │       ├── preview_preprocessing.py  # CPU 生成裁剪前后对照图
     │       ├── download_weights.py       # 在服务器预下载官方预训练权重
     │       ├── data_utils.py             # CSV、年龄处理与指标
@@ -82,6 +90,10 @@
     │   ├── preview_local_roi.py          # 候选ROI预览入口
     │   ├── audit_local_roi.py            # 读取已有报告，纯CPU、不加载模型
     │   ├── preview_classic_roi.py         # 传统候选预览入口，不训练
+    │   ├── benchmark_classic_roi.py       # CPU定位对照入口，不加载模型
+    │   ├── build_roi_cache.py             # 坐标生成入口，不训练
+    │   ├── check_local_pipeline.py        # 服务器合成模型训练/恢复/融合检查
+    │   ├── test_local.sh                  # 冻结全图＋局部分支融合评估
     │   └── check_finetune.py             # 服务器显式运行的微型模型集成检查
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
@@ -105,8 +117,8 @@ evaluate.py 是实际运行模型的入口，不是 tests 中的开发测试。
 
 ## 模型配置与对照实验
 
-支持 model_name=resnet18 或 efficientnet_b2，默认使用后者。
-EfficientNet-B2 仍与标准化年龄、年龄缺失标记拼接分类；预训练权重来自 torchvision 官方实现。
+支持 model_name=resnet18、efficientnet_b2、efficientnet_b0，默认仍为B2。
+默认全图模型与标准化年龄、年龄缺失标记拼接分类；局部B0配置use_age=false，分类头只接收1280维图像特征。预训练权重来自torchvision通用ImageNet实现。
 去黑边对照只改变预处理开关：正式输入仍为 320×320、batch=32，图像增强、BCE 权重和学习率保持一致。
 比较架构时请使用 configs/no_blackborder.json 对照原 ResNet18，避免同时更换骨干和预处理后无法归因。
 不预设新架构一定更好，需要用同一验证集、相近训练预算比较；T4 延迟也尚未测量。
@@ -358,7 +370,7 @@ configs/train.json 默认：320×320，batch=32，4 个读取进程，12 轮，A
 原版于2026-10-19在5090完成12轮，最佳第5轮AUROC为0.981308；次日独立评估复现。
 2026-10-25已通过4090D合成数据集成和真实小样本检查，并完成3轮正式微调；AUROC依次约0.975464、0.971716、0.971783，未超过复验的第0轮0.981324，因此保留原版最佳模型。没有把跨硬件的微小差异记作训练收益。
 缩略解码已在4090D完成12轮训练及独立评估，最佳第4轮AUROC 0.9815453817、AUPRC 0.7907557093，耗时1小时45分钟；独立评估精确复现。两种顺序的短程吞吐对照均约3.09倍，不能等同于T4推理验收或其他硬件的整轮提速。
-当前局部预览、几何、回退、传统亮区候选及报告汇总共79项轻量测试通过，不导入PyTorch或使用本地GPU。2026-10-28已完成4090D真实Grad-CAM集成检查；计算检查通过，但该策略的候选定位尚未通过图像验收，见局部预览章节。
+当前轻量检查共95项通过，覆盖几何、回退、缓存恢复、源图核验、B0结构、融合顺序和来源检查，不导入PyTorch或使用本地GPU。局部B0真实训练/恢复/融合集成检查仍待服务器运行；旧定位原型检查不等于新分类器集成检查。
 数据顺序与增强按 seed、epoch、图片索引固定，跨 GPU/驱动/PyTorch 版本不保证逐位相同。
 最终仍需官方 PyTorch 2.10.0/torchvision 0.25.0、T4 16GB 环境核验，单图端到端 <=100ms 和模型 <=500MB 尚未实测。
 仅加载自己生成的可信权重。复赛按届时清单打包，不能把 last.pt 等整个 runs 目录直接当作提交模型包。
@@ -493,6 +505,94 @@ python scripts/preview_classic_roi.py \
 已查看59张预览。相较原Grad-CAM，train_01869、train_40788等候选重新覆盖明亮血管汇聚区域；但train_08266和train_42748仍被边缘反光吸引并接受错误区域。本原型尚未通过稳定定位验收，不用于正式局部训练。
 当前512探针的CPU读图加定位中位数约449/425ms，不包括完整原图重读、保存与神经网络，已经超出100ms预算，不能作为通过T4验收的证据。应先补充反光失败场景、定位耗时分析并用新的train样本复核，避免只修复已看过的图片。
 原始预览、日志、源代码快照及逐文件哈希位于工作区outputs/training_results/20261028_classic_roi_preview/。原型运行前的服务器代码包为training_code_classic_roi_prototype_20261028.zip；后续文档和汇总变动以当前分支及本地结果说明为准。
+
+当前classic_roi.json改为版本2：当候选位于有效内容椭圆归一化半径>=0.8、细暗线支持<0.03时回退全图，防止缺乏结构的外缘亮峰被当作可靠候选。它也可能拒绝靠近外缘、结构不清晰的真实目标，因此保留全图回退，不将该分数称为置信度。旧版classic_roi_version=1仍可用于复现与对照。
+同时用可分离极值运算替代Pillow窗口排序，并优化等价的RGB极值计算。先验证速度变化不改变版本1，再单独比较版本2规则，避免把算法变化混成提速收益。
+
+```bash
+python scripts/benchmark_classic_roi.py \
+  --reports /root/autodl-tmp/training_classic_roi/training/outputs/classic_roi_reference_20261028/report.json \
+            /root/autodl-tmp/training_classic_roi/training/outputs/classic_roi_unseen_train_20261028/report.json \
+  --timing-count 12 --repeats 2 --output-dir outputs/classic_v2_ab
+python scripts/preview_classic_roi.py \
+  --reference-report /root/autodl-tmp/training_roi/training/outputs/local_roi_train_20261028/report.json \
+  --sampling unseen_train \
+  --exclude-report /root/autodl-tmp/training_classic_roi/training/outputs/classic_roi_unseen_train_20261028/report.json \
+  --count 32 --seed 2026102802 --output-dir outputs/classic_v2_fresh_train
+```
+
+--exclude-report可以重复指定，只接受同数据的已完成train报告。新32张排除了已查看的59张，固定规则后才运行，没有使用valid或test。报告记录排除来源及哈希。
+2026-10-28服务器实测：59张的版本1快慢滤波分数图和定位逐项一致；初次交替对照定位均值约423.3→59.6ms，约7.1倍（不含解码/绘图/模型）。版本2使train_08266、train_42748两个原接受的反光候选回退，其余原已接受候选保持不变；另外3张原已回退图只改变回退原因。
+最后追加RGB等价优化，在全部91张（旧59+新32）上分数图和定位不变。新32张最终读图加定位中位68.2ms、均值69.2ms，解码后的定位中位36.9ms。与第一阶段计时范围/样本不同，不能把两者比值当整条流程提速；缓存未受控，仍不是T4最终推理验收。
+新32张接受23张（阳性10/16、阴性13/16），4张外缘结构不足、5张多峰/分散回退。已查看全部预览，未见前一轮那种被接受的明显跨侧反光裁剪，但样本量小且没有真值框，不能报告定位准确率或分类收益。
+定位v2阶段结果已归档outputs/training_results/20261028_classic_roi_v2/。该阶段尚未增加局部分类器或启动训练；具备继续小规模局部对照的条件，完整全图＋局部链路仍需端到端计时与分类指标检验。
+
+<a id="local-training"></a>
+
+## 冻结全图模型与B0局部分支训练
+
+当前主线保留视觉＋年龄B2 draft640最佳权重，只读取它进行评估，不加载它的优化器或更新参数。局部分支是新建的EfficientNet-B0纯视觉模型，从通用ImageNet初始化；384输入、batch32、8轮、统一AdamW 1e-4、pos_weight1，增强沿用原版。它不是从旧B2 best.pt微调，不使用医学预训练或教师模型。
+input_view默认global、use_age默认true，旧权重按原结构加载。local配置必须use_age=false且finetune=false。不要在现有全图run中改变配置；自动生成独立局部目录。
+
+坐标生成固定使用classical ROI版本2、512探针和pipeline_draft.json的640解码配置。每张只记录原图坐标、原图SHA256/大小及回退原因，不保存大规模裁剪图片。定位不使用类别、年龄和概率；官方train训练局部模型，valid选择局部最佳权重，test只生成冻结规则的坐标和预测。
+定位失败时局部分支读取缓存的全图有效区域，样本保留；融合仍是50/50，不把失败样本悄悄改成另一种融合权重。局部图从新打开的原JPEG按完整坐标映射裁取，使用JPEG draft目标1280（实际解码尺寸由解码器决定），不从320全图输入裁剪。每次读取校验原图内容哈希；图片、坐标缓存或配置不一致会拒绝继续。
+缓存与CSV签名、固定规则、定位代码和Pillow/NumPy版本绑定；完成manifest最后发布，中断时重跑同一命令恢复。样本缓存与全量缓存用不同目录。完整坐标文件会复制到run/roi_cache/，后续恢复和评估可自动使用该副本，备份整个run时请保留它。不要删改Age或标签列，即使局部模型不使用年龄，数据签名仍需保持。
+
+在独立代码目录/root/autodl-tmp/training_local/training中激活glaucoma-cloud后，先运行服务器检查：
+
+```bash
+export OMP_NUM_THREADS=4
+python scripts/check_local_pipeline.py --device cuda
+```
+
+该检查只用合成图，显式训练微型ResNet全图和B0局部模型，不下载预训练；检查B0忽略年龄、坐标生成、暂停code3→从run缓存恢复、独立评估和固定概率融合、提交行列顺序，以及全图权重文件未变化。尚未在服务器运行，不要把轻量替身测试当作它已通过。
+
+通过后使用真实小样本：
+
+```bash
+python scripts/build_roi_cache.py --config configs/local_b0_smoke.json \
+  --output-dir outputs/roi_smoke --workers 4
+bash scripts/train.sh --config configs/local_b0_smoke.json \
+  --roi-cache outputs/roi_smoke --max-hours 0.25
+bash scripts/test_local.sh \
+  --global-checkpoint /root/autodl-tmp/training_pipeline/training/runs/efficientnet_b2_blackborder_draft640/best.pt \
+  --local-checkpoint runs/efficientnet_b0_blackborder_smoke_draft1280_imageonly_local/best.pt \
+  --allow-sample
+```
+
+局部分支256训练、128验证、64测试；全图参考评估仍可覆盖完整数据，但融合指标只在与局部相同的验证行上重新计算，避免拿不同样本数的分数直接比较。输出DEBUG_predictions.csv，不能用于正式提交。
+
+小样本通过后，先生成全量坐标（CPU操作，可在无卡模式运行；无需一直占用GPU）：
+
+```bash
+mkdir -p logs
+nohup python -u scripts/build_roi_cache.py --config configs/local_b0.json \
+  --output-dir outputs/roi_full --workers 4 >> logs/bootstrap_roi_cache.log 2>&1 &
+tail -f logs/bootstrap_roi_cache.log
+```
+
+看到Coordinate cache complete后再启动正式训练，不要把两步同时启动：
+
+```bash
+nohup bash scripts/train.sh --config configs/local_b0.json --roi-cache outputs/roi_full \
+  --max-hours 3 >> logs/bootstrap_local_b0.log 2>&1 &
+```
+
+缓存需要处理全部约6.3万张图片，以日志进度估计实际耗时。没有预先保证3小时内训练完8轮；预算结束code3时重复同一训练命令恢复。训练日志仍在logs/，最佳局部权重按local valid AUROC优先、AUPRC次优选择，尚未实现按融合AUROC选择每轮局部权重。
+
+完成后固定融合评估：
+
+```bash
+bash scripts/test_local.sh \
+  --global-checkpoint /root/autodl-tmp/training_pipeline/training/runs/efficientnet_b2_blackborder_draft640/best.pt \
+  --local-checkpoint runs/efficientnet_b0_blackborder_draft1280_imageonly_local/best.pt
+```
+
+可加--splits valid只评估验证集。全图与局部各自严格按保存配置评估，最后按Probability的算术平均融合，不搜索权重或阈值。报告同一验证行的global/local/fusion三个指标，核对名称、顺序、标签、CSV签名、权重哈希和坐标签名。权重在评估中发生变化则拒绝写完成manifest。
+最终融合文件位于局部run/fusion_evaluations/<时间戳>/submission.csv；子目录global/、local/保存的是单支路结果，不要拿错。只有根目录manifest.json的status=completed才表示融合完整；sample结果始终标DEBUG。
+单独查看局部模型可用bash scripts/test.sh --config configs/local_b0.json，默认读取run内坐标副本。恢复训练、评估和备份不能只拿best.pt而丢掉roi_cache/。
+
+此流程离线复用坐标缓存；它的耗时不代表未知新图上的端到端推理。当前未实现复赛部署接口、完整全图＋定位＋局部模型的T4计时，尚未证明100ms或分类提升。先通过服务器合成和真实小样本流程，再决定正式实验。
 
 <a id="finetune"></a>
 
