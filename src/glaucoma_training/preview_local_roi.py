@@ -51,6 +51,8 @@ def main():
     del raw
     config = canonical_config(state["config"])
     validate_config(config)
+    if config["input_view"] != "global" or not config["use_age"]:
+        parser.error("This Grad-CAM preview requires the global image+age reference checkpoint")
     if any(config.get(k, 0) for k in ("train_limit", "valid_limit", "test_limit")):
         parser.error("Use a full-data reference checkpoint, not a debug model")
     signature = data_signature(args.data_root)

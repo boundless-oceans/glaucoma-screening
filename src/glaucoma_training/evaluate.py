@@ -10,7 +10,8 @@ import torch
 from .common import FusionModel, FundusDataset, evaluate, make_loader
 from .data_utils import data_signature, json_save, metrics, read_rows, subset, write_predictions
 from .run_utils import protect_output
-from .model_config import checkpoint_model_name
+from .model_config import checkpoint_model_name, uses_age, input_view
+from .roi_cache import load_roi_cache, cache_rows
 from .preprocess_config import preprocessing_options
 
 
@@ -26,6 +27,7 @@ def main():
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
     parser.add_argument("--splits", nargs="+", choices=["valid", "test"], default=["valid", "test"])
     parser.add_argument("--jpeg-draft-size", type=int, help="Experimental decoder override; valid only")
+    parser.add_argument("--roi-cache", type=Path)
     args = parser.parse_args()
     if not 0 <= args.threshold <= 1 or args.batch_size <= 0 or args.workers < 0:
         parser.error("Invalid threshold, batch-size or workers")
@@ -44,6 +46,7 @@ def main():
     del content
     config = dict(state["config"])
     if args.jpeg_draft_size is not None:
+        if input_view(config) == "local": parser.error("Local decoder overrides are not supported")
         if set(args.splits) != {"valid"}:
             parser.error("Experimental decoder override is restricted to --splits valid")
         config["jpeg_draft_size"] = args.jpeg_draft_size
@@ -62,11 +65,18 @@ def main():
     output.mkdir(parents=True, exist_ok=False)
     torch.set_num_threads(config["cpu_threads"])
     device = torch.device(args.device)
-    model = FusionModel(model_name=model_name).to(device)
+    cache = None
+    if input_view(config) == "local":
+        if not state.get("roi_cache_signature"): raise ValueError("Local checkpoint lacks ROI cache signature")
+        cache = load_roi_cache(args.data_root, args.roi_cache or args.checkpoint.parent / "roi_cache", state["roi_cache_signature"])
+    elif args.roi_cache is not None:
+        raise ValueError("Global evaluation does not use --roi-cache")
+    model = FusionModel(model_name=model_name, use_age=uses_age(config)).to(device)
     model.load_state_dict(state["model"])
     report = dict(start_utc=datetime.now(timezone.utc).isoformat(), checkpoint=str(args.checkpoint.resolve()),
                   checkpoint_sha256=checkpoint_hash, checkpoint_epoch=state["epoch"], threshold=args.threshold,
                   model_name=model_name,
+                  use_age=uses_age(config), input_view=input_view(config), roi_cache_signature=state.get("roi_cache_signature"),
                   preprocessing=preprocessing_options(config),
                   sampled=sampled, age_stats=state["age_stats"], config=config,
                   initialization=state.get("initialization"),
@@ -80,7 +90,8 @@ def main():
         rows = read_rows(args.data_root, split)
         if args.allow_sample:
             rows = subset(rows, config.get(f"{split}_limit", 0), config["seed"])
-        dataset = FundusDataset(rows, state["age_stats"], config["image_size"], preprocessing=config)
+        dataset = FundusDataset(rows, state["age_stats"], config["image_size"], preprocessing=config,
+                                roi_records=cache_rows(cache, split, rows) if cache else None)
         loader = make_loader(dataset, args.batch_size, args.workers, device=device)
         print(f"Evaluating {split}: {len(rows)} images", flush=True)
         names, probabilities, labels = evaluate(model, loader, device, config["amp"])

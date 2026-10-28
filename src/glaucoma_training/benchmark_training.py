@@ -15,7 +15,7 @@ import torch
 from . import DEFAULT_DATA_ROOT, PROJECT_ROOT
 from .common import FusionModel, FundusDataset, make_loader
 from .data_utils import read_rows, data_signature, json_save
-from .model_config import checkpoint_model_name
+from .model_config import checkpoint_model_name, uses_age, input_view
 from .preprocess_config import preprocessing_options
 from .run_utils import protect_output
 
@@ -62,7 +62,9 @@ def main():
         torch.manual_seed(config["seed"])
         torch.cuda.manual_seed_all(config["seed"])
         options = {**config, "jpeg_draft_size": 0 if mode == "full" else args.draft_size}
-        model = FusionModel(model_name=checkpoint_model_name(state)).to(device)
+        if input_view(config) == "local":
+            raise ValueError("This decoder A/B script only benchmarks global input, not cached local crops")
+        model = FusionModel(model_name=checkpoint_model_name(state), use_age=uses_age(config)).to(device)
         model.load_state_dict(state["model"])
         model.train()
         optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
