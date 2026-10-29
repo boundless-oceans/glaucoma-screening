@@ -74,6 +74,12 @@ def main():
             raise ValueError("Reference must be the frozen global image+age model")
         if manifests["local"]["config"].get("input_view") != "local" or manifests["local"]["config"].get("use_age", True):
             raise ValueError("Local checkpoint must be an image-only cached-ROI model")
+        selection = manifests["local"].get("selection")
+        if selection:
+            if selection["global_checkpoint_sha256"] != hashes["global"]:
+                raise ValueError("Fusion-selected checkpoint requires its original frozen global model")
+            report["local_selection"] = selection["criterion"]
+            report["selection"] = selection
         sampled = manifests["local"]["sampled"]
         if manifests["global"]["sampled"] and not sampled:
             raise ValueError("A debug global model cannot produce a full fusion submission")

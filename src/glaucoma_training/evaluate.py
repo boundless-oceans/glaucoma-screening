@@ -79,7 +79,7 @@ def main():
                   use_age=uses_age(config), input_view=input_view(config), roi_cache_signature=state.get("roi_cache_signature"),
                   preprocessing=preprocessing_options(config),
                   sampled=sampled, age_stats=state["age_stats"], config=config,
-                  initialization=state.get("initialization"),
+                  initialization=state.get("initialization"), selection=state.get("selection"),
                   checkpoint_config=state["config"], experimental_decoder_override=args.jpeg_draft_size is not None,
                   data_signature=state["data_signature"],
                   device=str(device), splits=list(dict.fromkeys(args.splits)),
@@ -104,6 +104,7 @@ def main():
             write_predictions(output / "validation_predictions.csv", names, probabilities, args.threshold, labels)
             print("Validation metrics: " + json.dumps(result), flush=True)
             report["validation"] = result
+            report["validation_sha256"] = hashlib.sha256((output / "validation_predictions.csv").read_bytes()).hexdigest()
         else:
             filename = "DEBUG_predictions.csv" if sampled else "submission.csv"
             write_predictions(output / filename, names, probabilities, args.threshold)

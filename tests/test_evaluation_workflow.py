@@ -105,6 +105,8 @@ class EvaluationWorkflowChecks(unittest.TestCase):
             else:
                 self.assertFalse((output / "submission.csv").exists())
             self.assertEqual((output / "validation_metrics.json").exists(), "valid" in splits)
+            if "valid" in splits:
+                self.assertEqual(manifest["validation_sha256"], hashlib.sha256((output / "validation_predictions.csv").read_bytes()).hexdigest())
             self.assertEqual(manifest["status"], "completed")
             self.assertEqual(manifest["experimental_decoder_override"], draft_size is not None)
             if draft_size is not None:
