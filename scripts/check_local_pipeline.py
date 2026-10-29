@@ -16,6 +16,7 @@ import sys
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda")
+    parser.add_argument("--fusion-selection", action="store_true", help="Also check cached-reference fusion checkpoint selection")
     args = parser.parse_args()
     import torch
     from PIL import Image, ImageDraw
@@ -64,14 +65,27 @@ def main():
     train = ["--data-root", data, "--device", args.device, "--skip-predict"]
     run("train", train + ["--config", global_config, "--run-dir", output/"global"])
     global_hash = hashlib.sha256((output/"global/best.pt").read_bytes()).hexdigest()
+    if args.fusion_selection:
+        run("evaluate", ["--data-root", data, "--checkpoint", output/"global/best.pt",
+                         "--output-dir", output/"reference", "--splits", "valid", "--device", args.device, "--workers", "0"])
     local = train + ["--config", local_config, "--run-dir", output/"local", "--roi-cache", output/"cache"]
+    if args.fusion_selection:
+        local += ["--fusion-reference-evaluation", output/"reference"]
     run("train", local + ["--max-hours", "0.000000001"], 3)
     # Resume from the run-side coordinate snapshot, without the external cache argument.
     run("train", train + ["--config", local_config, "--run-dir", output/"local"])
     progress = json.loads((output/"local/progress.json").read_bytes())
     if progress["status"] != "completed": raise RuntimeError("Local training not completed")
+    local_best = output/"local/best.pt"
+    if args.fusion_selection:
+        for name in ("best_local.pt", "best_fusion.pt", "best_fusion_manifest.json", "validation_epochs/epoch_0001/local.csv"):
+            assert (output/"local"/name).is_file(), name
+        before = hashlib.sha256((output/"local/best_fusion.pt").read_bytes()).hexdigest()
+        run("train", train + ["--config", local_config, "--run-dir", output/"local"])
+        assert hashlib.sha256((output/"local/best_fusion.pt").read_bytes()).hexdigest() == before
+        local_best = output/"local/best_fusion.pt"
     run("evaluate_fusion", ["--data-root", data, "--global-checkpoint", output/"global/best.pt",
-                            "--local-checkpoint", output/"local/best.pt", "--roi-cache", output/"cache",
+                            "--local-checkpoint", local_best, "--roi-cache", output/"cache",
                             "--device", args.device, "--batch-size", "2", "--workers", "0", "--output-dir", output/"fusion"])
     manifest = json.loads((output/"fusion/manifest.json").read_bytes())
     assert manifest["status"] == "completed" and set(manifest["validation"]) == {"global", "local", "fusion"}
