@@ -370,7 +370,7 @@ configs/train.json 默认：320×320，batch=32，4 个读取进程，12 轮，A
 原版于2026-10-19在5090完成12轮，最佳第5轮AUROC为0.981308；次日独立评估复现。
 2026-10-25已通过4090D合成数据集成和真实小样本检查，并完成3轮正式微调；AUROC依次约0.975464、0.971716、0.971783，未超过复验的第0轮0.981324，因此保留原版最佳模型。没有把跨硬件的微小差异记作训练收益。
 缩略解码已在4090D完成12轮训练及独立评估，最佳第4轮AUROC 0.9815453817、AUPRC 0.7907557093，耗时1小时45分钟；独立评估精确复现。两种顺序的短程吞吐对照均约3.09倍，不能等同于T4推理验收或其他硬件的整轮提速。
-当前轻量检查共95项通过，覆盖几何、回退、缓存恢复、源图核验、B0结构、融合顺序和来源检查，不导入PyTorch或使用本地GPU。局部B0真实训练/恢复/融合集成检查仍待服务器运行；旧定位原型检查不等于新分类器集成检查。
+当前轻量检查共101项通过，覆盖几何、回退、缓存恢复、源图核验、B0结构、融合顺序、选模、事务恢复和来源检查，不导入PyTorch或使用本地GPU。原版局部B0训练/恢复/融合已在服务器通过；新增融合选模模式的真实模型集成检查仍待运行。
 数据顺序与增强按 seed、epoch、图片索引固定，跨 GPU/驱动/PyTorch 版本不保证逐位相同。
 最终仍需官方 PyTorch 2.10.0/torchvision 0.25.0、T4 16GB 环境核验，单图端到端 <=100ms 和模型 <=500MB 尚未实测。
 仅加载自己生成的可信权重。复赛按届时清单打包，不能把 last.pt 等整个 runs 目录直接当作提交模型包。
@@ -578,7 +578,7 @@ nohup bash scripts/train.sh --config configs/local_b0.json --roi-cache outputs/r
   --max-hours 3 >> logs/bootstrap_local_b0.log 2>&1 &
 ```
 
-缓存需要处理全部约6.3万张图片，以日志进度估计实际耗时。没有预先保证3小时内训练完8轮；预算结束code3时重复同一训练命令恢复。训练日志仍在logs/，最佳局部权重按local valid AUROC优先、AUPRC次优选择，尚未实现按融合AUROC选择每轮局部权重。
+缓存需要处理全部约6.3万张图片，以日志进度估计实际耗时。没有预先保证3小时内训练完8轮；预算结束code3时重复同一训练命令恢复。训练日志仍在logs/，最佳局部权重按local valid AUROC优先、AUPRC次优选择，默认仍按局部分数选模；按融合分数选模是下文显式启用的可选模式。
 
 完成后固定融合评估：
 
@@ -593,6 +593,63 @@ bash scripts/test_local.sh \
 单独查看局部模型可用bash scripts/test.sh --config configs/local_b0.json，默认读取run内坐标副本。恢复训练、评估和备份不能只拿best.pt而丢掉roi_cache/。
 
 此流程离线复用坐标缓存；它的耗时不代表未知新图上的端到端推理。当前未实现复赛部署接口、完整全图＋定位＋局部模型的T4计时，尚未证明100ms或分类提升。先通过服务器合成和真实小样本流程，再决定正式实验。
+
+### 可选：按融合验证指标选择局部权重
+
+原版8轮局部训练已完成：最佳局部第4轮AUROC为0.975805，固定融合为0.983556，全图参考为0.981545；这是验证集结果，线上表现尚待确认。新增模式保持网络、增强、数据划分和50/50概率平均不变，只改变权重的选择与保存。
+
+先利用已经训练的第8轮做验证对照，无需重新训练。在新代码目录下运行：
+
+```bash
+bash scripts/test_local.sh \
+  --global-checkpoint /root/autodl-tmp/training_pipeline/training/runs/efficientnet_b2_blackborder_draft640/best.pt \
+  --local-checkpoint /root/autodl-tmp/training_local/training/runs/efficientnet_b0_blackborder_draft1280_imageonly_local/last.pt \
+  --splits valid
+```
+
+新模式上线前先运行服务器合成检查：
+
+```bash
+python scripts/check_local_pipeline.py --device cuda --fusion-selection
+```
+
+准备训练时，用当前版本代码仅对冻结全图权重评估一次验证集，生成可复用的带哈希参考。不能使用test预测或手工改过的CSV；旧版报告缺少validation_sha256，需重新评估一次，不会更新全图权重。
+
+```bash
+PYTHONPATH=src python -u -m glaucoma_training.evaluate \
+  --data-root /root/autodl-tmp/glaucoma_first \
+  --checkpoint /root/autodl-tmp/training_pipeline/training/runs/efficientnet_b2_blackborder_draft640/best.pt \
+  --output-dir outputs/frozen_global_valid --splits valid --device cuda
+```
+
+随后在独立新run中启用选模（下面是准备好后由用户启动的正式训练命令）：
+
+```bash
+mkdir -p logs
+nohup bash scripts/train.sh --config configs/local_b0.json \
+  --roi-cache /root/autodl-tmp/training_local/training/outputs/roi_full \
+  --fusion-reference-evaluation outputs/frozen_global_valid \
+  --max-hours 3 >> logs/bootstrap_fusion_selection.log 2>&1 &
+```
+
+自动目录为runs/efficientnet_b0_blackborder_draft1280_imageonly_local_fusionselect/，不覆盖原实验。不能直接在旧run中追加选模模式。恢复时重复同一命令；使用显式--run-dir时也可省略参考参数，从run/fusion_reference/副本恢复。CSV签名、验证名称/顺序/标签和参考预测哈希须一致，替换参考会拒绝恢复。
+
+- best.pt与best_local.pt：局部AUROC优先、AUPRC次优的权重；保留原best.pt入口语义。
+- best_fusion.pt：固定融合AUROC优先、AUPRC次优的局部权重，仍须与原全图权重一起推理；它本身不是一个合并网络。
+- validation_epochs/epoch_XXXX/：每轮local.csv、fusion.csv及metrics.json，不涉及测试集选模。
+- fusion_checkpoints/与best_fusion_manifest.json：不可变最佳代际文件与原子完成指针。恢复会核对文件哈希、恢复较新的已提交最佳，并重建便捷别名。备份整个run，不能只备份别名；未提交的中断代际不会被采用。
+
+每轮只对局部模型做原有验证，全图缓存的算术融合不增加GPU前向。CSV概率统一10位小数后进行融合选模，与离线CSV融合口径一致。新模式会保留每次改善的融合代际，磁盘占用高于只留一个best的旧模式。
+
+正式融合评估时显式选择best_fusion.pt；引用其他全图权重会拒绝评估：
+
+```bash
+bash scripts/test_local.sh \
+  --global-checkpoint /root/autodl-tmp/training_pipeline/training/runs/efficientnet_b2_blackborder_draft640/best.pt \
+  --local-checkpoint runs/efficientnet_b0_blackborder_draft1280_imageonly_local_fusionselect/best_fusion.pt
+```
+
+新增模式尚未在服务器实际运行，不能据轻量替身检查宣称训练已通过，也不保证相同验证集上的选模收益能迁移到线上。
 
 <a id="finetune"></a>
 
