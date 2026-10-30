@@ -2,6 +2,7 @@
 /logs/
 /outputs/
 /docs/
+/experiments/r16_roi_consistency/outputs/
 __pycache__/
 *.py[cod]
 *.pt
