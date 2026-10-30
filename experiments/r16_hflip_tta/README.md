@@ -8,8 +8,10 @@
 - 翻转臂在原始 JPEG 的 draft768 解码、EXIF 转正和 RGB 转换后水平翻转，不重新压缩 JPEG；随后重新去黑边、补边、计算全图 CAM、定位并裁取局部。
 - 每个视图内部沿用原版全图/局部 raw-logit 等权融合；该视图定位失败则只用该视图全图。两个视图之间固定平均**概率**，阈值仍为0.5。
 - 串行 B1、FP16、无年龄，不搜索视图权重、阈值或其他翻转组合。
-- 当前通过7项本地 CPU 检查，覆盖身份/标签对齐、旧权重限制、概率平均、EXIF与奇数尺寸下的原图像素等价、翻转解码、CLI及准备保护。没有在本地导入 PyTorch。
-- **真实模型的32图检查、完整验证和 GPU 耗时测量尚未运行。没有证据表明 TTA 会提高平台得分。**
+- 当前通过12项本地 CPU 检查，覆盖原有推理契约，以及CAM近峰/并列峰诊断、复现判定和失败审计阻止TTA。没有在本地导入 PyTorch。
+- 2026-10-30已运行原版32图真实检查，全部通过；完整TTA验证保存3117行后，因 `valid_03118.jpg` 原图概率0.0475584023与归档0.0579711395不一致而停止。没有完整TTA成绩。
+- 额外诊断中，该图当前CAM的两个邻近峰值约4.493500/4.493049，ROI与旧资产不同；仅诊断使用旧框时概率约0.0579713952。支持选峰敏感性解释，但未确定跨环境差异来源，不能据此声称数据损坏或直接改变选峰规则。
+- **新增baseline-audit模式仅通过本地CPU契约检查，尚未在服务器运行。当前没有证据表明TTA会提高平台得分。**
 
 本实验复用相邻 `../r16_roi_consistency/vendor` 中固定的历史源码，准备时检查其清单。上传配方时需要保留这两个相邻目录，不能只上传本目录。
 
@@ -52,7 +54,25 @@ python tests/test_tta.py
 
 只复制推理源码、官方 valid 角色清单及已归档验证概率，生成 `EXPERIMENT.json`；权重保持外部只读。验证官方 valid 的5849个身份及标签与原资料一致，其中191例阳性。不读取 train/test 图像，不创建训练任务或安装环境。
 
-## 3. 先运行32图真实检查
+## 3. 当前下一步：完整原版基线审计
+
+新源码必须重新prepare到全新运行目录，保留旧失败现场，不能覆盖旧项目或修改旧哈希记录。下方示例假定新目录仍命名为 `/root/autodl-tmp/r16_hflip_tta`；若该路径已经存在，准备命令和后续cd都换成同一个新路径。
+
+```bash
+cd /root/autodl-tmp/r16_hflip_tta
+mkdir -p logs
+export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
+nohup /root/r16-roi-env/bin/python -u run.py --mode baseline-audit \
+  > logs/baseline_audit.log 2>&1 < /dev/null &
+```
+
+只调用原版R08Pipeline跑完整5849图，不执行翻转或TTA，不更新权重和ROI规则。记录每张归档差异；超过0.001的样本继续收集，不在首个异常处终止。为每个异常额外保存JSON：重复原版预测、不翻转helper对照、JPEG与512输入像素哈希、几何、ROI和CAM前两峰差值。额外CAM来自另一次前向，明确不是计时调用的内部捕获；这些诊断前向不计入单图原版推理时延。近峰差值只描述敏感性，不是新选峰阈值。
+
+审计完整跑完时 `status=completed`，但 `results.json/reproduction/baseline_reproduced` 单独表示是否满足原来的逐图及AUROC/AP容差；两者不能混用。任何逐图超限都会使复现判定为false。审计不写check_passed标记，也不自动启动TTA。若已有审计未完成、运行环境不同或复现失败，valid模式会在推理前拒绝继续；需查明原因后再决策，不默默放宽容差。
+
+报告保存在 `outputs/baseline-audit_<UTC时间>/`，异常详情在其中的 `outliers/`。超时仍按失败处理并保留部分输出。没有历史原图哈希可用于反向验证时，不宣称JPEG内容与队长机器已经逐字节核验。
+
+## 4. 基线问题解决后：32图真实检查
 
 ```bash
 cd /root/autodl-tmp/r16_hflip_tta
@@ -69,7 +89,7 @@ export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8
 
 通过后写出 `check_passed.json`，绑定当前源码、两份权重、官方 CSV、归档概率和实际运行环境。再次运行检查会先撤销旧标记；完整验证必须有同一项目和环境下的成功检查。此处不更新任何模型参数。
 
-## 4. 再运行完整 valid 对照
+## 5. 再运行完整 valid 对照
 
 ```bash
 nohup /root/r16-roi-env/bin/python -u run.py --mode valid \
@@ -84,7 +104,7 @@ nohup /root/r16-roi-env/bin/python -u run.py --mode valid \
 
 ## 输出与后续决策
 
-每次写入全新的 `outputs/check_<UTC时间>/` 或 `outputs/valid_<UTC时间>/`：
+每次写入全新的 `outputs/check_<UTC时间>/`、`outputs/baseline-audit_<UTC时间>/` 或 `outputs/valid_<UTC时间>/`：
 
 ```text
 outputs/valid_<UTC时间>/
