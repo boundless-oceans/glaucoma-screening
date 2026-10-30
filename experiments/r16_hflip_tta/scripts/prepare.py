@@ -40,7 +40,8 @@ def main():
                 reference_sha256=REFERENCE_SHA,vendor_sha256=records,
                 source_sha256={p.relative_to(target).as_posix():sha(p) for p in target.rglob('*') if p.is_file()},
                 baseline_guard=dict(max_abs_probability_delta=0.001,max_abs_auc_delta=0.0001,max_abs_ap_delta=0.0005),
-                training=False,test_export=False)
+                training=False,test_export=False,single_view_export_available=True,
+                official_test_sha256=sha(data/'test.csv') if (data/'test.csv').is_file() else None)
     (target/'EXPERIMENT.json').write_text(json.dumps(config,indent=2),encoding='utf-8')
     print('Prepared inference files only:',target)
 

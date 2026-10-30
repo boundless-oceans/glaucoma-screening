@@ -1,4 +1,4 @@
-"""Explicit GPU check, then fixed full-valid comparison. No training/test path."""
+"""Explicit GPU check, then fixed full-valid comparison. No training; test export requires explicit single-test mode."""
 import argparse
 import csv
 from datetime import datetime,timezone
@@ -58,12 +58,13 @@ def verify_audit_record(root,fingerprint):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=('check','baseline-audit','valid','paired-check','paired-valid'),required=True)
+    parser.add_argument('--mode',choices=('check','baseline-audit','valid','paired-check','paired-valid','single-check','single-valid','single-test'),required=True)
     parser.add_argument('--output-dir',type=Path,help='Must be NEW; default outputs/<mode>_<UTC timestamp>')
     parser.add_argument('--max-minutes',type=float,default=30)
-    parser.add_argument('--baseline-audit',type=Path,help='Completed same-runtime original audit; paired modes only')
+    parser.add_argument('--baseline-audit',type=Path,help='Completed same-runtime original audit; paired/single validation modes only')
     args=parser.parse_args()
-    if (args.mode.startswith('paired-'))!=(args.baseline_audit is not None):parser.error('Paired modes require --baseline-audit; other modes reject it')
+    needs_audit=args.mode.startswith('paired-') or args.mode in ('single-check','single-valid')
+    if needs_audit!=(args.baseline_audit is not None):parser.error('Paired/single validation modes require --baseline-audit; other modes reject it')
     if not math.isfinite(args.max_minutes) or args.max_minutes<=0:parser.error('--max-minutes must be positive and finite')
     if sys.platform!='linux':parser.error('Model inference is server-only. Run the CPU tests locally instead.')
     root=Path(__file__).resolve().parents[2]
@@ -77,6 +78,8 @@ def main():
         output.mkdir(parents=True,exist_ok=False)
         if args.mode=='check':(root/'check_passed.json').unlink(missing_ok=True)
         if args.mode=='paired-check':(root/'paired_check_passed.json').unlink(missing_ok=True)
+        if args.mode=='single-check':(root/'single_check_passed.json').unlink(missing_ok=True)
+        if args.mode in ('single-check','single-valid'):(root/'single_valid_passed.json').unlink(missing_ok=True)
         if args.mode=='baseline-audit':dump(root/'baseline_audit.json',dict(status='running',output=str(output)))
         dump(output/'status.json',dict(status='running',mode=args.mode,started_utc=datetime.now(timezone.utc).isoformat()))
         try:
@@ -89,6 +92,9 @@ def main():
 
 
 def run(root,output,config,rows,args):
+    if args.mode in ('single-valid','single-test'):
+        from .single_view import run_single
+        return run_single(root,output,config,rows,args)
     if args.mode=='baseline-audit':
         from .audit import run_audit
         return run_audit(root,output,config,rows,args)
@@ -117,7 +123,7 @@ def run(root,output,config,rows,args):
         marker=json.loads((root/'check_passed.json').read_bytes())
         if marker['fingerprint']!=fingerprint or sha(marker['result_path'])!=marker['result_sha256']:
             raise ValueError('Run the 32-image check successfully in this exact prepared project/runtime first')
-    paired=args.mode.startswith('paired-')
+    paired=args.mode.startswith('paired-') or args.mode=='single-check'
     control=None;control_provenance=None
     if paired:
         from .paired_reference import load_reference
@@ -140,7 +146,7 @@ def run(root,output,config,rows,args):
         models.append(model.cuda().eval().requires_grad_(False))
         del checkpoint
     pipe=R08Pipeline(*models,'cuda')
-    selected=check_sample(rows) if args.mode in ('check','paired-check') else rows
+    selected=check_sample(rows) if args.mode in ('check','paired-check','single-check') else rows
     data=Path(config['data_root']).resolve()
     for row in selected[:3]:
         path=(data/row['relative_path']).resolve()
@@ -177,7 +183,7 @@ def run(root,output,config,rows,args):
             if index%25==0:stream.flush()
             if abs(original['probability']-reference)>config['baseline_guard']['max_abs_probability_delta']:
                 raise ValueError('Selected control probability not reproduced: '+row['image_id']+'; diagnose weights, data and runtime before TTA')
-            if args.mode in ('check','paired-check'):
+            if args.mode in ('check','paired-check','single-check'):
                 # Strong GPU check that the copied preprocessing/forward, WITHOUT flip,
                 # exactly matches the unchanged original implementation on these images.
                 same=predict_view(pipe,path,mirrored=False)
@@ -221,7 +227,7 @@ def run(root,output,config,rows,args):
          ('registration.json','predictions.csv','results.json','status.json')}))
     if args.mode=='check':
         dump(root/'check_passed.json',dict(fingerprint=fingerprint,result_path=str(output/'results.json'),result_sha256=sha(output/'results.json')))
-    if args.mode=='paired-check':
-        dump(root/'paired_check_passed.json',dict(fingerprint=fingerprint,control=control_provenance,result_path=str(output/'results.json'),result_sha256=sha(output/'results.json')))
+    if args.mode in ('paired-check','single-check'):
+        dump(root/('single_check_passed.json' if args.mode=='single-check' else 'paired_check_passed.json'),dict(fingerprint=fingerprint,control=control_provenance,result_path=str(output/'results.json'),result_sha256=sha(output/'results.json')))
     print(json.dumps(result,indent=2,allow_nan=False),flush=True)
     print('Report:',output,'; no training, test export or platform operation',flush=True)

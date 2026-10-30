@@ -20,6 +20,7 @@ from r16_tta import evaluate
 from r16_tta.diagnostics import cam_peak_summary,audit_decision
 from r16_tta.imaging import prepare_view
 from r16_tta.paired_reference import load_reference
+from r16_tta.single_contracts import write_submission,test_rows,verify_stage_marker,SINGLE_POLICY
 from glaucoma.local_region import prepare_shared,crop_decoded
 
 spec=importlib.util.spec_from_file_location('prepare_tta',HERE/'scripts/prepare.py')
@@ -41,6 +42,54 @@ def fixtures(root):
 
 
 class TtaContracts(unittest.TestCase):
+    def test_single_flip_submission_order_and_near_half_round_trip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            rows=[dict(image_id=f'test_{i:05d}.jpg') for i in reversed(range(5855))]
+            values=[.49999999999999994,.5,1e-20,1.,0.]+[.12345678901234567]*5850
+            path=Path(temporary)/'submission_single_flip.csv'
+            write_submission(path,rows,values);restored=contracts.read_csv(path)
+            self.assertEqual(list(restored[0]),['Image_name','Probability','Pred_Label'])
+            self.assertEqual([r['Image_name'] for r in restored],[r['image_id'] for r in rows])
+            self.assertEqual([float(r['Probability']) for r in restored],values)
+            self.assertEqual([r['Pred_Label'] for r in restored[:2]],['0','1'])
+            with self.assertRaises(FileExistsError):write_submission(path,rows,values)
+            self.assertEqual(SINGLE_POLICY['views'],['horizontal_flip'])
+
+    def test_single_flip_submission_rejects_missing_duplicate_nonfinite(self):
+        rows=[dict(image_id=f'test_{i:05d}.jpg') for i in range(5855)]
+        with tempfile.TemporaryDirectory() as temporary:
+            path=Path(temporary)/'submission.csv'
+            with self.assertRaises(ValueError):write_submission(path,rows,[.5])
+            with self.assertRaises(ValueError):write_submission(path,rows,[float('nan')]+[.5]*5854)
+            rows[0]=rows[1]
+            with self.assertRaises(ValueError):write_submission(path,rows,[.5]*5855)
+            self.assertFalse(path.exists())
+
+    def test_test_metadata_case_mapping_and_official_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data=Path(temporary);metadata=data/'test.csv'
+            names=[f'test_{i:05d}.jpg' for i in reversed(range(5855))]
+            metadata.write_text('Image_name,Age\n'+'\n'.join(n+',60' for n in names))
+            paths=[data/'test'/n.replace('.jpg','.JPG') for n in reversed(names)]
+            with patch.object(Path,'iterdir',return_value=iter(paths)),patch.object(Path,'is_file',return_value=True):
+                rows=test_rows(data,contracts.sha(metadata))
+            self.assertEqual([r['image_id'] for r in rows],names)
+            self.assertTrue(rows[0]['relative_path'].endswith('.JPG'))
+            with self.assertRaises(ValueError):test_rows(data,'changed')
+            metadata.write_text('Image_name,True_Label\n'+'\n'.join(n+',0' for n in names))
+            with self.assertRaisesRegex(ValueError,'labels'):test_rows(data,contracts.sha(metadata))
+
+    def test_single_view_requires_completed_same_source_validation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);result=root/'result.json';marker=root/'single_valid_passed.json'
+            with self.assertRaises(FileNotFoundError):verify_stage_marker(root,marker.name,'test')
+            result.write_text(json.dumps(dict(status='completed',mode='single-valid',n=5849)))
+            marker.write_text(json.dumps(dict(fingerprint='test',result_path=str(result),result_sha256=contracts.sha(result))))
+            verify_stage_marker(root,marker.name,'test')
+            with self.assertRaises(ValueError):verify_stage_marker(root,marker.name,'another')
+            result.write_text(result.read_text()+' ')
+            with self.assertRaisesRegex(ValueError,'changed'):verify_stage_marker(root,marker.name,'test')
+
     def paired_fixture(self,root):
         data,manifest,reference=fixtures(root)
         rows=contracts.validation_rows(manifest,data/'valid.csv',reference)

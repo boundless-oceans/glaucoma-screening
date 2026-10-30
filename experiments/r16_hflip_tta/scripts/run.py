@@ -1,4 +1,4 @@
-"""Server-only original-R16 TTA check/evaluation; never trains or exports test."""
+"""Server-only original-R16 TTA check/evaluation; never trains; test export is explicit."""
 from pathlib import Path
 import sys
 
