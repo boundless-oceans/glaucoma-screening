@@ -687,16 +687,18 @@ python experiments/r16_roi_consistency/tests/test_recipe.py
 
 ## 原版R16水平翻转TTA对照
 
-下一项独立实验放在[experiments/r16_hflip_tta](experiments/r16_hflip_tta/README.md)：固定队长原版E32 epoch7＋E33 epoch15权重，原图保持历史R08Pipeline，翻转图从EXIF转正后的解码像素重新计算CAM和ROI。每个视图内部保持原版logit融合，两个视图固定平均概率；不训练、不搜索比例和阈值。
+实验位于[experiments/r16_hflip_tta](experiments/r16_hflip_tta/README.md)，固定队长原版E32 epoch7＋E33 epoch15权重；原图保持历史R08Pipeline，翻转图重新计算CAM和ROI，每个视图内部沿用logit融合，两视图固定平均概率。不训练、不改ROI规则、不搜索比例或阈值。
 
 ```bash
 # 本地CPU检查，需要NumPy/Pillow，不导入PyTorch
 python experiments/r16_hflip_tta/tests/test_tta.py
 ```
 
-原图与TTA分别报告指标和完整推理时延，不生成test提交，4090D测速不能代替T4验收。2026-10-30已补齐并核验原版E33第15轮局部权重（SHA256以1eb7f862开头），原全图、原局部及验证概率材料均已齐备；ROI一致性实验的新局部权重不能替代原版权重。材料、路径和命令见上述独立说明。
+2026-10-30：原32图检查通过，但归档严格复现在valid_03118出现超差。随后完成5849图原图基线审计，仅1图超过0.001逐图容差，硬标签全部一致，本机AUROC=0.9893756512，归档=0.9893770392。历史严格复现状态仍为失败，原valid入口保护不变。
 
-2026-10-30更新：32图服务器检查已通过，完整验证在保存3117行时被valid_03118的归档概率差异中止，没有完整TTA成绩。诊断发现原版实时CAM近邻峰值可能引起ROI切换，原因仍需进一步核对。当前新增只跑原图的baseline-audit模式，完整收集异常、指标差异、图像哈希和CAM/ROI诊断；审计完成不等于复现通过，失败审计会阻止TTA，原容差和ROI策略不变。当前共12项CPU检查通过，新审计模式尚待服务器验收。下一步先prepare全新目录执行baseline-audit，不重训，也不直接重跑TTA。
+新增paired-check/paired-valid独立协议，显式绑定完成的本机审计作为实验对照，校验材料、环境、推理源码和逐图概率。15项CPU检查及服务器32图配对检查通过；完整配对验证5849图的原图概率与审计逐张相同。TTA AUROC=0.9899322462、AP=0.8655545806，原图为0.9893756512与0.8644753091；0.5阈值少漏3例、少误报15例。2000次图像级配对bootstrap的AUROC增量95%区间约[-0.000315,0.001718]，包含0，不保证平台涨分。
+
+同轮4090D原图平均约61.83ms、TTA约125.12ms，耗时约翻倍，未做T4验收。保留TTA为候选，不默认替换原版，不生成test提交；结果已归档到工作区outputs/training_results/20261030_r16_hflip_tta_paired/。配方、材料及命令见独立说明。
 
 <a id="finetune"></a>
 
