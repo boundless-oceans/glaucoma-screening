@@ -15,6 +15,7 @@
 - [传统图像候选定位原型](#classic-roi)
 - [冻结全图模型与B0局部分支训练](#local-training)
 - [R16 ROI一致性独立实验](#r16-roi-consistency)
+- [原版R16水平翻转TTA对照](#r16-hflip-tta)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
 - [最佳权重短程微调](#finetune)
@@ -97,11 +98,16 @@
     │   ├── test_local.sh                  # 冻结全图＋局部分支融合评估
     │   └── check_finetune.py             # 服务器显式运行的微型模型集成检查
     ├── experiments/
-    │   └── r16_roi_consistency/           # 队长R16独立配方、ROI精度修复与分阶段入口
-    │       ├── scripts/                  # 纯文件准备、服务器check/assets/train/evaluate
-    │       ├── tests/                    # 独立CPU契约检查，需要pandas
-    │       ├── vendor/                   # 固定历史最小源码与官方数据角色清单
-    │       └── README.md                 # 环境、材料、命令及one-shot限制
+    │   ├── r16_roi_consistency/           # 队长R16独立配方、ROI精度修复与分阶段入口
+    │   │   ├── scripts/                  # 纯文件准备、服务器check/assets/train/evaluate
+    │   │   ├── tests/                    # 独立CPU契约检查，需要pandas
+    │   │   ├── vendor/                   # 固定历史最小源码与官方数据角色清单
+    │   │   └── README.md                 # 环境、材料、命令及one-shot限制
+    │   └── r16_hflip_tta/                 # 原版R16冻结权重的水平翻转推理对照
+    │       ├── scripts/                  # 新目录准备与服务器check/valid入口
+    │       ├── src/r16_tta/               # 身份检查、翻转视图、概率平均及报告
+    │       ├── tests/                    # 不加载模型的CPU检查
+    │       └── README.md                 # 原版材料要求、命令及当前验收范围
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
     ├── outputs/                          # 预处理预览等生成产物，不入 Git
@@ -671,11 +677,24 @@ bash scripts/test_local.sh \
 python experiments/r16_roi_consistency/tests/test_recipe.py
 ```
 
-已完成5项CPU检查；服务器实际冻结CAM与随机局部模型更新检查尚待运行。准备脚本只在全新目录写文件，运行脚本明确分check、assets、train、evaluate阶段；不会自动下载、开始全图训练或提交结果。新运行项目独立于旧training/runs/，原权重只读使用。
+已完成5项CPU检查，并于2026-10-30完成服务器冻结CAM、32图裁剪像素、随机局部更新验收、正式训练和完整原图B1验证。最终AUROC为0.9890619593、AP为0.8517480648，未超过原版R16的0.9893770392与0.8645259663，因此保留原版作为基线。产物已归档到工作区outputs/training_results/20261030_r16_roi_consistency/，未生成test提交。
 
-目标模型环境沿用R16的torch2.10.0+cu128、torchvision0.25.0+cu128，入口会拒绝现有2.8/0.23；不要覆盖旧glaucoma-cloud环境。原作者依赖版本记录保存在vendor/requirements-training.txt，本次未联网确认可安装性。正式局部训练还需要指定SHA256的通用ConvNeXt22K→1K初始化文件。
+模型环境为服务器已安装验收的独立/root/r16-roi-env，torch2.10.0+cu128、torchvision0.25.0+cu128；未覆盖旧glaucoma-cloud的2.8/0.23环境。正式局部训练还需要指定SHA256的通用ConvNeXt22K→1K初始化文件。
 
 此入口保持R16 one-shot语义，不支持旧train.sh的中间batch恢复；不要直接套用旧命令。CPU几何核对不是服务器模型验收，也不保证分类提升或T4达标。先在独立环境通过check，再生成资产，是否训练由后续对照决定。
+
+<a id="r16-hflip-tta"></a>
+
+## 原版R16水平翻转TTA对照
+
+下一项独立实验放在[experiments/r16_hflip_tta](experiments/r16_hflip_tta/README.md)：固定队长原版E32 epoch7＋E33 epoch15权重，原图保持历史R08Pipeline，翻转图从EXIF转正后的解码像素重新计算CAM和ROI。每个视图内部保持原版logit融合，两个视图固定平均概率；不训练、不搜索比例和阈值。
+
+```bash
+# 本地CPU检查，需要NumPy/Pillow，不导入PyTorch
+python experiments/r16_hflip_tta/tests/test_tta.py
+```
+
+当前7项CPU检查通过，真实模型check/valid尚未运行。准备新目录后必须先完成32图复现与不翻转等价检查，再允许完整5849图验证；原图与TTA分别报告指标和完整推理时延。不生成test提交，4090D测速不能代替T4验收。2026-10-30已补齐并核验原版E33第15轮局部权重（SHA256以1eb7f862开头），原全图、原局部及验证概率材料现已齐备；本次ROI一致性实验的新局部权重不能替代原版权重。材料、路径和命令见上述独立说明。
 
 <a id="finetune"></a>
 
