@@ -1,5 +1,6 @@
 """Prepare an isolated R16 ROI-consistency project. Stdlib only; never trains."""
 import argparse
+import csv
 import hashlib
 import json
 from pathlib import Path
@@ -18,6 +19,26 @@ def replace_once(text, old, new):
     if text.count(old) != 1:
         raise ValueError('Archived source changed; refusing ambiguous patch: '+old)
     return text.replace(old, new, 1)
+
+
+def build_split_registration(data, manifests):
+    """Create the provenance artifact required by the archived local trainer."""
+    result=dict(data_root=str(Path(data).resolve()),valid_gradient_or_statistics_fit=False,
+                test_used=False,variant='r16_roi_consistency',official_csv_sha256={})
+    for split,n,positive in (('train',51396,1657),('valid',5849,191)):
+        path=Path(manifests)/(split+'.csv')
+        if not path.exists(): path=Path(manifests)/('official_'+split+'.csv')
+        with path.open(encoding='utf-8-sig',newline='') as stream: rows=list(csv.DictReader(stream))
+        with (Path(data)/(split+'.csv')).open(encoding='utf-8-sig',newline='') as stream: official=list(csv.DictReader(stream))
+        normalize=lambda x:str(x).rsplit('.',1)[0].casefold()
+        actual={normalize(r['image_id']):int(float(r['label'])) for r in rows}
+        expected={normalize(r['Image_name']):int(r['True_Label']) for r in official}
+        if len(actual)!=n or len(rows)!=n or len(official)!=n or len(expected)!=n or sum(actual.values())!=positive or actual!=expected:
+            raise ValueError('Official rows/labels differ: '+split)
+        result[split+'_n']=n;result[split+'_positive']=positive
+        result[split+'_sha256']=sha(path)
+        result['official_csv_sha256'][split]=sha(Path(data)/(split+'.csv'))
+    return result
 
 
 def patched_sources(vendor):
@@ -54,6 +75,7 @@ def main():
     vendor=HERE/'vendor'; records=json.loads((vendor/'SOURCE_SHA256.json').read_bytes())
     for name,expected in records.items():
         if sha(vendor/name)!=expected: raise ValueError('Vendored file differs: '+name)
+    split_registration=build_split_registration(data,vendor/'original/manifests')
     patched_data, patched_controller=patched_sources(vendor)
     target.mkdir(parents=True)
     (target/'runs').mkdir()
@@ -76,6 +98,7 @@ def main():
     shutil.copyfile(vendor/'original/pretrained/local_initializer_provenance.json',pretrained/'provenance.json')
     shutil.copyfile(vendor/'original/pretrained/LICENSE.ConvNeXt',pretrained/'LICENSE')
     (target/'reports/R16-roi-consistency').mkdir(parents=True)
+    (target/'reports/R16-roi-consistency/split_registration.json').write_text(json.dumps(split_registration,indent=2),encoding='utf-8')
     # The reference remains external and read-only; the driver checks its hash at every stage.
     metadata=dict(variant='r16_roi_consistency',global_checkpoint=str(weights),global_checkpoint_sha256=GLOBAL_SHA,
         data_root=str(data),official_csv_sha256={s:sha(data/(s+'.csv')) for s in ('train','valid')},

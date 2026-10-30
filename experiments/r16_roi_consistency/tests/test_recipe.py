@@ -1,5 +1,6 @@
 """CPU geometry/preparation contracts. No model imports or pretrained downloads."""
 import hashlib
+import csv
 import importlib.util
 import io
 import json
@@ -42,7 +43,12 @@ class RecipeChecks(unittest.TestCase):
     def test_preparation_never_loads_models_or_overwrites_existing_project(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);data=root/'data';data.mkdir()
-            for split in ('train','valid'):(data/(split+'.csv')).write_text('Image_name,True_Label\na.jpg,0\n')
+            for split in ('train','valid'):
+                with (HERE/f'vendor/original/manifests/official_{split}.csv').open(encoding='utf-8',newline='') as stream:
+                    rows=list(csv.DictReader(stream))
+                with (data/(split+'.csv')).open('w',encoding='utf-8',newline='') as stream:
+                    writer=csv.writer(stream);writer.writerow(['Image_name','True_Label'])
+                    writer.writerows((r['image_id'],r['label']) for r in rows)
             weights=root/'best.pt';weights.write_bytes(b'not-deserialized-test-fixture')
             target=root/'project'
             argv=['prepare','--output',str(target),'--data-root',str(data),'--global-checkpoint',str(weights)]
@@ -54,6 +60,9 @@ class RecipeChecks(unittest.TestCase):
             self.assertTrue((target/'runs').is_dir())
             self.assertEqual(list((target/'runs').iterdir()),[])
             self.assertEqual(meta['runner_sha256'],prepare.sha(target/'run.py'))
+            registration=json.loads((target/'reports/R16-roi-consistency/split_registration.json').read_bytes())
+            self.assertEqual((registration['train_n'],registration['valid_n']),(51396,5849))
+            self.assertFalse(registration['valid_gradient_or_statistics_fit'])
             self.assertIn("float_precision='round_trip'",(target/'src/glaucoma/data.py').read_text())
 
     def test_same_float_coordinates_produce_same_pixels(self):
