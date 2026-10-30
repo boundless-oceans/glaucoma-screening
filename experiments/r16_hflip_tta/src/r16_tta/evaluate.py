@@ -44,9 +44,21 @@ def timing(values):
                 p95_ms=float(np.quantile(values,.95)),max_ms=max(values))
 
 
+def verify_audit_record(root,fingerprint):
+    marker=root/'baseline_audit.json'
+    if not marker.exists():return  # Original strict check/valid workflow is retained.
+    record=json.loads(marker.read_bytes())
+    if record.get('status')!='completed' or record.get('fingerprint')!=fingerprint:
+        raise ValueError('Baseline audit is incomplete or uses another runtime; do not run TTA')
+    if sha(record['result_path'])!=record['result_sha256']:raise ValueError('Baseline audit report changed')
+    result=json.loads(Path(record['result_path']).read_bytes())
+    if result['mode']!='baseline-audit' or result['n']!=5849 or not result['reproduction']['baseline_reproduced']:
+        raise ValueError('Baseline audit did not reproduce the archive; resolve differences before TTA')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode',choices=('check','valid'),required=True)
+    parser.add_argument('--mode',choices=('check','baseline-audit','valid'),required=True)
     parser.add_argument('--output-dir',type=Path,help='Must be NEW; default outputs/<mode>_<UTC timestamp>')
     parser.add_argument('--max-minutes',type=float,default=30)
     args=parser.parse_args()
@@ -62,6 +74,7 @@ def main():
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         output.mkdir(parents=True,exist_ok=False)
         if args.mode=='check':(root/'check_passed.json').unlink(missing_ok=True)
+        if args.mode=='baseline-audit':dump(root/'baseline_audit.json',dict(status='running',output=str(output)))
         dump(output/'status.json',dict(status='running',mode=args.mode,started_utc=datetime.now(timezone.utc).isoformat()))
         try:
             run(root,output,config,rows,args)
@@ -73,6 +86,9 @@ def main():
 
 
 def run(root,output,config,rows,args):
+    if args.mode=='baseline-audit':
+        from .audit import run_audit
+        return run_audit(root,output,config,rows,args)
     import torch
     import torchvision
     import numpy as np
@@ -94,6 +110,7 @@ def run(root,output,config,rows,args):
          selection_caveat='Repeatedly researched official valid, not independent blind evidence',
          image_identity_check='Manifest/CSV alignment and archived-probability reproduction; no JPEG content hash claim'))
     if args.mode=='valid':
+        verify_audit_record(root,fingerprint)
         marker=json.loads((root/'check_passed.json').read_bytes())
         if marker['fingerprint']!=fingerprint or sha(marker['result_path'])!=marker['result_sha256']:
             raise ValueError('Run the 32-image check successfully in this exact prepared project/runtime first')

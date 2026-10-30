@@ -17,6 +17,7 @@ sys.path.insert(0,str(HERE/'src'))
 sys.path.insert(0,str(HERE.parent/'r16_roi_consistency/vendor/original/src'))
 from r16_tta import contracts
 from r16_tta import evaluate
+from r16_tta.diagnostics import cam_peak_summary,audit_decision
 from r16_tta.imaging import prepare_view
 from glaucoma.local_region import prepare_shared,crop_decoded
 
@@ -39,6 +40,57 @@ def fixtures(root):
 
 
 class TtaContracts(unittest.TestCase):
+    def test_failed_or_incomplete_audit_blocks_tta_before_forward(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            evaluate.verify_audit_record(root,'test')
+            marker=root/'baseline_audit.json';marker.write_text(json.dumps(dict(status='running')))
+            with self.assertRaisesRegex(ValueError,'incomplete'):evaluate.verify_audit_record(root,'test')
+            report=root/'result.json'
+            report.write_text(json.dumps(dict(mode='baseline-audit',n=5849,reproduction=dict(baseline_reproduced=False))))
+            marker.write_text(json.dumps(dict(status='completed',fingerprint='test',result_path=str(report),result_sha256=contracts.sha(report))))
+            with self.assertRaisesRegex(ValueError,'did not reproduce'):evaluate.verify_audit_record(root,'test')
+            report.write_text(report.read_text()+' ')
+            with self.assertRaisesRegex(ValueError,'report changed'):evaluate.verify_audit_record(root,'test')
+
+    def test_cam_summary_uses_original_eligible_peak_and_absolute_heat(self):
+        from glaucoma.local_region import attention_box
+        cam=np.zeros((16,16));mask=np.ones((16,16),dtype=bool)
+        cam[0,0]=1000  # Original ellipse must exclude this edge peak.
+        cam[12,7]=-4.493499755859375;cam[12,6]=4.493049144744873
+        summary=cam_peak_summary(cam,mask)
+        self.assertEqual((summary['peaks'][0]['y'],summary['peaks'][0]['x']),(12,7))
+        self.assertLess(summary['relative_gap'],0.001)
+        self.assertFalse(summary['roi_policy_changed'])
+        original=attention_box(cam,mask)
+        changed=cam.copy();changed[12,6]+=.001
+        self.assertNotEqual(original['box'],attention_box(changed,mask)['box'])
+        self.assertEqual(cam_peak_summary(changed,mask)['peaks'][0]['x'],6)
+
+    def test_cam_summary_ties_empty_and_nonfinite(self):
+        cam=np.zeros((16,16));cam[8,7]=cam[8,8]=2
+        summary=cam_peak_summary(cam,np.ones_like(cam,dtype=bool))
+        self.assertEqual(summary['peaks'][0]['x'],7)
+        self.assertEqual(summary['relative_gap'],0)
+        self.assertEqual(cam_peak_summary(cam,np.zeros_like(cam,dtype=bool))['peaks'],[])
+        cam[1,1]=np.nan
+        with self.assertRaises(ValueError):cam_peak_summary(cam,np.ones_like(cam,dtype=bool))
+
+    def test_completed_audit_does_not_accept_outlier_or_unlock_tta(self):
+        guard=dict(max_abs_probability_delta=.001,max_abs_auc_delta=.0001,max_abs_ap_delta=.0005)
+        metrics=dict(auc_probability=.98,ap_probability=.8,prauc_trapezoid_probability=.79)
+        result=audit_decision([.0475584023,.8],[.0579711395,.8],guard,metrics,metrics)
+        self.assertFalse(result['baseline_reproduced']);self.assertEqual(result['outlier_count'],1)
+        self.assertFalse(result['tta_unlocked']);self.assertFalse(result['guard_changed'])
+        good=audit_decision([.2,.8],[.2,.8],guard,metrics,metrics)
+        self.assertTrue(good['baseline_reproduced']);self.assertFalse(good['tta_unlocked'])
+        changed=dict(metrics,auc_probability=.981)
+        self.assertFalse(audit_decision([.2,.8],[.2,.8],guard,changed,metrics)['baseline_reproduced'])
+
+    def test_audit_rejects_invalid_probability_arrays(self):
+        for a,b in (([],[]),([.2],[.2,.3]),([float('nan')],[.2]),([1.1],[.2])):
+            with self.assertRaises(ValueError):audit_decision(a,b,{}, {}, {})
+
     def test_probability_mean_is_not_logit_mean(self):
         self.assertAlmostEqual(contracts.average_views(.1,.8),.45)
         self.assertEqual(contracts.average_views(0,1),.5)
