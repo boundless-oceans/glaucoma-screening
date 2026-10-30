@@ -3,6 +3,7 @@
 /outputs/
 /docs/
 /experiments/r16_roi_consistency/outputs/
+/experiments/r16_hflip_tta/outputs/
 __pycache__/
 *.py[cod]
 *.pt
