@@ -19,6 +19,7 @@ from r16_tta import contracts
 from r16_tta import evaluate
 from r16_tta.diagnostics import cam_peak_summary,audit_decision
 from r16_tta.imaging import prepare_view
+from r16_tta.paired_reference import load_reference
 from glaucoma.local_region import prepare_shared,crop_decoded
 
 spec=importlib.util.spec_from_file_location('prepare_tta',HERE/'scripts/prepare.py')
@@ -40,6 +41,50 @@ def fixtures(root):
 
 
 class TtaContracts(unittest.TestCase):
+    def paired_fixture(self,root):
+        data,manifest,reference=fixtures(root)
+        rows=contracts.validation_rows(manifest,data/'valid.csv',reference)
+        config=dict(policy=contracts.POLICY,official_valid_sha256='csv',reference_sha256='ref',weights={'global':{'sha256':'g'},'local':{'sha256':'l'}},
+                    source_sha256={'src/glaucoma/models.py':'model','src/r16_tta/imaging.py':'image','src/r16_tta/pipeline.py':'pipe','valid_manifest.csv':'manifest'},
+                    baseline_guard=dict(max_abs_probability_delta=.001,max_abs_auc_delta=.0001,max_abs_ap_delta=.0005))
+        folder=root/'audit';folder.mkdir();(folder/'outliers').mkdir()
+        predictions=[]
+        for i,row in enumerate(rows):
+            predictions.append(dict(image_id=row['image_id'],label=row['label'],reference_probability=row['reference_probability'],probability=row['reference_probability']-(.01 if i==0 else 0)))
+        with (folder/'predictions.csv').open('w',newline='',encoding='utf-8') as stream:
+            writer=csv.DictWriter(stream,fieldnames=predictions[0].keys());writer.writeheader();writer.writerows(predictions)
+        metrics=dict(auc_probability=.98,ap_probability=.8)
+        payloads={'registration.json':dict(fingerprint='audit',runtime={'gpu':'test'},config=config),
+                  'results.json':dict(status='completed',mode='baseline-audit',n=5849,fingerprint='audit',original_metrics=metrics,reference_metrics=metrics,
+                                      outliers=[dict(image_id=rows[0]['image_id'],report='outliers/one.json')],reproduction=dict(baseline_reproduced=False)),
+                  'status.json':dict(status='completed'),'outliers/one.json':dict(repeat_equal=True,helper_equal=True)}
+        for name,value in payloads.items():(folder/name).write_text(json.dumps(value),encoding='utf-8')
+        (folder/'complete.json').write_text(json.dumps(dict(fingerprint='audit',files={name:contracts.sha(folder/name) for name in (*payloads,'predictions.csv')})))
+        return folder,config,rows
+
+    def test_paired_control_keeps_archive_failure_explicit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder,config,rows=self.paired_fixture(Path(temporary))
+            control,provenance=load_reference(folder,config,{'gpu':'test'},rows)
+            self.assertAlmostEqual(control[rows[0]['image_id']],.19)
+            self.assertFalse(provenance['archival_strict_reproduction'])
+            self.assertTrue(provenance['archive_is_context_not_paired_control'])
+
+    def test_paired_control_rejects_tampering_and_runtime_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder,config,rows=self.paired_fixture(Path(temporary))
+            with self.assertRaisesRegex(ValueError,'runtime differs'):load_reference(folder,config,{'gpu':'other'},rows)
+            (folder/'predictions.csv').write_text('modified')
+            with self.assertRaisesRegex(ValueError,'artifact changed'):load_reference(folder,config,{'gpu':'test'},rows)
+
+    def test_paired_control_rejects_different_inference_or_labels(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            folder,config,rows=self.paired_fixture(Path(temporary))
+            config=json.loads(json.dumps(config));config['source_sha256']['src/r16_tta/pipeline.py']='changed'
+            with self.assertRaisesRegex(ValueError,'inference source differs'):load_reference(folder,config,{'gpu':'test'},rows)
+            config['source_sha256']['src/r16_tta/pipeline.py']='pipe';rows[0]['label']=1
+            with self.assertRaisesRegex(ValueError,'labels/archive'):load_reference(folder,config,{'gpu':'test'},rows)
+
     def test_failed_or_incomplete_audit_blocks_tta_before_forward(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
