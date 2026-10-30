@@ -14,6 +14,7 @@
 - [局部区域定位与预览](#local-roi)
 - [传统图像候选定位原型](#classic-roi)
 - [冻结全图模型与B0局部分支训练](#local-training)
+- [R16 ROI一致性独立实验](#r16-roi-consistency)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
 - [最佳权重短程微调](#finetune)
@@ -95,6 +96,12 @@
     │   ├── check_local_pipeline.py        # 服务器合成模型训练/恢复/融合检查
     │   ├── test_local.sh                  # 冻结全图＋局部分支融合评估
     │   └── check_finetune.py             # 服务器显式运行的微型模型集成检查
+    ├── experiments/
+    │   └── r16_roi_consistency/           # 队长R16独立配方、ROI精度修复与分阶段入口
+    │       ├── scripts/                  # 纯文件准备、服务器check/assets/train/evaluate
+    │       ├── tests/                    # 独立CPU契约检查，需要pandas
+    │       ├── vendor/                   # 固定历史最小源码与官方数据角色清单
+    │       └── README.md                 # 环境、材料、命令及one-shot限制
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
     ├── outputs/                          # 预处理预览等生成产物，不入 Git
@@ -650,6 +657,25 @@ bash scripts/test_local.sh \
 ```
 
 新增模式尚未在服务器实际运行，不能据轻量替身检查宣称训练已通过，也不保证相同验证集上的选模收益能迁移到线上。
+
+<a id="r16-roi-consistency"></a>
+
+## R16 ROI一致性独立实验
+
+本分支新增experiments/r16_roi_consistency/，承接队长R16配方，独立于我方320全图＋年龄与B0管线。旧入口、配置和模型文件不变。详细步骤见[独立实验说明](experiments/r16_roi_consistency/README.md)。
+
+复用已核验的E32 epoch7 B2/512纯视觉权重，局部保持ConvNeXtTiny/384、通用ImageNet22K→1K初始化、pos_weight约30、分组LR及warmup、融合AUROC再AP选模、50/50 raw-logit平均与global fallback。本轮改变的是ROI一致性：CSV写17位有效数字、round_trip读回，并将train资产生成从batch32改为B1，与valid和实时B1流程对齐。此为新变体，不是声称原R16代码或权重已修复。
+
+```bash
+# 本地允许的CPU检查，不加载模型；需要NumPy/Pillow/pandas
+python experiments/r16_roi_consistency/tests/test_recipe.py
+```
+
+已完成5项CPU检查；服务器实际冻结CAM与随机局部模型更新检查尚待运行。准备脚本只在全新目录写文件，运行脚本明确分check、assets、train、evaluate阶段；不会自动下载、开始全图训练或提交结果。新运行项目独立于旧training/runs/，原权重只读使用。
+
+目标模型环境沿用R16的torch2.10.0+cu128、torchvision0.25.0+cu128，入口会拒绝现有2.8/0.23；不要覆盖旧glaucoma-cloud环境。原作者依赖版本记录保存在vendor/requirements-training.txt，本次未联网确认可安装性。正式局部训练还需要指定SHA256的通用ConvNeXt22K→1K初始化文件。
+
+此入口保持R16 one-shot语义，不支持旧train.sh的中间batch恢复；不要直接套用旧命令。CPU几何核对不是服务器模型验收，也不保证分类提升或T4达标。先在独立环境通过check，再生成资产，是否训练由后续对照决定。
 
 <a id="finetune"></a>
 
