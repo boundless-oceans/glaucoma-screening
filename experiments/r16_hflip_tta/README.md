@@ -8,7 +8,7 @@
 - 翻转臂在原始 JPEG 的 draft768 解码、EXIF 转正和 RGB 转换后水平翻转，不重新压缩 JPEG；随后重新去黑边、补边、计算全图 CAM、定位并裁取局部。
 - 每个视图内部沿用原版全图/局部 raw-logit 等权融合；该视图定位失败则只用该视图全图。两个视图之间固定平均**概率**，阈值仍为0.5。
 - 串行 B1、FP16、无年龄，不搜索视图权重、阈值或其他翻转组合。
-- 当前通过15项本地 CPU 检查，增加了独立配对基线的绑定、防篡改及环境/推理代码一致性检查。没有在本地导入 PyTorch。
+- 当前通过19项本地 CPU 检查，增加了独立配对基线的绑定、防篡改及环境/推理代码一致性检查。没有在本地导入 PyTorch。
 - 2026-10-30已运行原版32图真实检查，全部通过；完整TTA验证保存3117行后，因 `valid_03118.jpg` 原图概率0.0475584023与归档0.0579713952不一致而停止。没有完整TTA成绩。
 - 额外诊断中，该图当前CAM的两个邻近峰值约4.493500/4.493049，ROI与旧资产不同；仅诊断使用旧框时概率约0.0579713952。支持选峰敏感性解释，但未确定跨环境差异来源，不能据此声称数据损坏或直接改变选峰规则。
 - 完整baseline-audit已在4090D完成：5849张仅1张超逐图容差，全部0.5硬标签一致；本机AUROC=0.9893756512、AP=0.8644753091，归档为0.9893770392与0.8645259663。严格复现状态仍为false，不修改该记录。
@@ -24,6 +24,26 @@
 2000次按类别分层的图像级配对bootstrap，seed20261030，AUROC增量95%区间约[-0.000315,0.001718]，包含0。valid经过多次选模研究，且没有患者级独立性验证，不能据此保证平台收益。单独翻转臂仅为诊断，不事后搜索其他组合。
 
 同轮4090D原图均值61.83ms/p95 88.08ms，TTA均值125.12ms/p95 179.48ms，代价约翻倍；未通过T4单张100ms验收。TTA保留为候选，暂不默认替换原版；未生成test提交，也未重训。工作区outputs/training_results/20261030_r16_hflip_tta_paired/归档45份校验文件，含实际源码、完整预测、计时、bootstrap和日志。本地纯CPU独立重算全部5组指标及逐图概率平均一致。
+
+## 单次水平翻转候选：新增入口
+
+此前双视图诊断中，单独翻转臂AUROC=0.9901034351、AP=0.8600360104；原图为0.9893756512与0.8644753091。它的AUROC较高、AP较低，属于看过valid后挑出的新候选，不能称为预先注册的盲测提升。新增入口没有改变翻转、CAM或ROI算法；只在部署路径中去掉原图臂和概率平均。19项CPU契约检查通过，新增单次路径的服务器检查、独立耗时和test导出尚未运行。
+
+准备全新运行目录后依次执行；不能覆盖已有TTA项目或继承旧源码的通过标记：
+
+```bash
+# 新项目准备仍用scripts/prepare.py；此处示意该项目内的命令
+python -u run.py --mode single-check --baseline-audit /path/to/completed/baseline-audit_TIMESTAMP
+python -u run.py --mode single-valid --baseline-audit /path/to/completed/baseline-audit_TIMESTAMP
+# 独立完整valid成功后才可显式导出test候选
+python -u run.py --mode single-test
+```
+
+single-check固定32张，额外运行原图、翻转和关闭翻转helper来核对工程等价性，写独立single_check_passed.json；其耗时不能代表部署速度。single-valid只做单次翻转推理，报告单独时延和完整valid指标，并与冻结原图基线及历史归档比较。它复用原本已通过的审计材料校验规则，不更新模型、年龄统计或ROI。
+
+single-test要求同一新项目、源码和实际运行环境下已完成5849图single-valid；准备时若存在test.csv，会绑定其SHA256，没有绑定则拒绝导出，需重新prepare。test元数据必须为5855个唯一、无标签的官方图像身份，输出严格保留test.csv顺序，兼容磁盘.JPG与元数据.jpg。仅生成submission_single_flip.csv，列为Image_name、Probability、Pred_Label，阈值0.5。概率使用17位有效数字并回读校验，避免靠近0.5时因写出舍入而出现概率与标签不一致；写入临时文件，完整核验后才改为最终文件名。
+
+新出口仅通过显式single-test启用，旧check/valid、paired和审计入口都不导出test；不连接比赛平台或自动提交。测试集没有标签，不计算测试AUROC。单次推理虽减少一次全图/局部预测，实际时延仍须测量，不能据此宣称通过T4 100ms。
 
 ## 所需材料
 
@@ -127,7 +147,7 @@ python -u run.py --mode paired-valid --baseline-audit /path/to/completed/baselin
 
 每张新原图概率与冻结本机基线比较，仍使用0.001逐图容差，最终AUROC/AP仍按原容差核对；这是新的对照对象，非放宽历史复现阈值。predictions.csv同时保留archived_probability（队长归档）和reference_probability（本机审计），results.json的paired_control记录来源与历史严格复现状态。TTA始终与同一机器新测原图配对比较，不能把历史差异计为TTA收益。不训练，不改CAM/ROI规则，不生成test提交。
 
-每次写入全新的 `outputs/check_<UTC时间>/`、`outputs/baseline-audit_<UTC时间>/` 或 `outputs/valid_<UTC时间>/`：
+每次写入全新的 `outputs/<mode>_<UTC时间>/`；single-test额外包含submission_single_flip.csv：
 
 ```text
 outputs/valid_<UTC时间>/
@@ -138,4 +158,4 @@ outputs/valid_<UTC时间>/
 └── complete.json           # 成功后最后写入的报告哈希
 ```
 
-不覆盖旧目录，不生成 test 提交文件，也不操作比赛平台。失败输出可能只有部分文件，不能当作完整验证。当前 valid 已用于多次选模和研究，即使 AUROC 上升，也不能据此宣称获得独立盲测提升。先同时评估 AUROC、AP 与目标硬件耗时，再决定是否保留这一个固定方案。
+不覆盖旧目录，只有显式single-test生成test候选文件；各模式均不操作比赛平台。失败输出可能只有部分文件，不能当作完整验证。当前 valid 已用于多次选模和研究，即使 AUROC 上升，也不能据此宣称获得独立盲测提升。先同时评估 AUROC、AP 与目标硬件耗时，再决定是否保留这一个固定方案。

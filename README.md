@@ -700,6 +700,8 @@ python experiments/r16_hflip_tta/tests/test_tta.py
 
 同轮4090D原图平均约61.83ms、TTA约125.12ms，耗时约翻倍，未做T4验收。保留TTA为候选，不默认替换原版，不生成test提交；结果已归档到工作区outputs/training_results/20261030_r16_hflip_tta_paired/。配方、材料及命令见独立说明。
 
+新增单次翻转候选入口single-check/single-valid/single-test，沿用同一原版权重与定位策略，只做一次翻转后的预测。先完成32图检查及独立完整valid，才允许显式single-test导出有完整顺序校验的5855行submission_single_flip.csv；概率写17位有效数字。该候选是在观察先前valid诊断后选择，既有翻转臂AUROC较高而AP较低，不保证平台收益。当前19项CPU检查通过，新入口尚未在服务器验收；原双视图入口行为不变，详情见独立实验说明。
+
 <a id="finetune"></a>
 
 ## 最佳权重短程微调
