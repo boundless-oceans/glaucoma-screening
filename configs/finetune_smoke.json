@@ -1,0 +1,10 @@
+{
+  "finetune": true,
+  "pretrained": false,
+  "learning_rate": 0.00001,
+  "epochs": 1,
+  "num_workers": 2,
+  "train_limit": 256,
+  "valid_limit": 128,
+  "test_limit": 16
+}

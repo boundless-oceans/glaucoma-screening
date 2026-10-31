@@ -1,0 +1,8 @@
+{
+  "model_name": "efficientnet_b0",
+  "input_view": "local",
+  "use_age": false,
+  "image_size": 384,
+  "jpeg_draft_size": 1280,
+  "epochs": 8
+}

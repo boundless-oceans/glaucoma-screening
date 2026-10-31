@@ -1,0 +1,7 @@
+{
+  "roi_version": 1,
+  "size_fraction": 0.6,
+  "min_attention_mass": 0.55,
+  "min_concentration_gain": 1.2,
+  "min_foreground_fraction": 0.5
+}

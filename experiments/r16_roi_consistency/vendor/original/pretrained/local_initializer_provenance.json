@@ -1,0 +1,36 @@
+{
+  "name": "official ConvNeXt-Tiny ImageNet22K pretrain then ImageNet1K fine-tune 384",
+  "domain": "generic natural images ImageNet22K and ImageNet1K",
+  "license": "MIT",
+  "upstream_commit": "048efcea897d999aed302f2639b6270aedf8d4c8",
+  "repository": "https://github.com/facebookresearch/ConvNeXt",
+  "files": [
+    {
+      "url": "https://raw.githubusercontent.com/facebookresearch/ConvNeXt/048efcea897d999aed302f2639b6270aedf8d4c8/LICENSE",
+      "path": "LICENSE",
+      "bytes": 1088,
+      "sha256": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/facebookresearch/ConvNeXt/048efcea897d999aed302f2639b6270aedf8d4c8/README.md",
+      "path": "README.md",
+      "bytes": 6999,
+      "sha256": "224fe1444bc31eda1c157a769bf36cb52d5ea0118d27460822f93a4b4385b404"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/facebookresearch/ConvNeXt/048efcea897d999aed302f2639b6270aedf8d4c8/models/convnext.py",
+      "path": "upstream_convnext.py",
+      "bytes": 9321,
+      "sha256": "e081a71bcad826035cdac2c314bc26de93b0dcb95a70ce8b7668f3e61490b7d2"
+    },
+    {
+      "url": "https://dl.fbaipublicfiles.com/convnext/convnext_tiny_22k_1k_384.pth",
+      "path": "convnext_tiny_22k_1k_384.pth",
+      "bytes": 114414741,
+      "sha256": "f22f8850dcded245f4ae3bc402bbde9c6f5e4e23e76dfaea3aadb75aa9d3705a"
+    }
+  ],
+  "medical_pretraining": false,
+  "downloaded_only": true,
+  "compatibility_not_yet_verified": true
+}

@@ -20,7 +20,7 @@ if not torch.cuda.is_available():
 print("GPU:", torch.cuda.get_device_name(0), flush=True)
 print("VRAM GiB:", round(torch.cuda.get_device_properties(0).total_memory / 2**30, 2), flush=True)
 print("Model:", config["model_name"], flush=True)
-model = FusionModel(pretrained=False, model_name=config["model_name"]).cuda()
+model = FusionModel(pretrained=False, model_name=config["model_name"], use_age=config["use_age"]).cuda()
 model(torch.randn(2, 3, config["image_size"], config["image_size"], device="cuda"),
       torch.zeros(2, 2, device="cuda")).sum().backward()
 torch.cuda.synchronize()

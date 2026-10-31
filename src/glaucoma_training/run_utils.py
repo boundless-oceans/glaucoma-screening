@@ -3,13 +3,18 @@ import atexit
 import math
 import os
 from pathlib import Path
-from .model_config import model_name_from_config
+from .model_config import model_name_from_config, uses_age, input_view
 from .preprocess_config import preprocessing_options
 
 
 def validate_config(config):
+    uses_age(config)
+    if input_view(config) == "local" and (uses_age(config) or config.get("finetune", False)):
+        raise ValueError("Local experiments require use_age=false and finetune=false")
+    if type(config.get("finetune", False)) is not bool:
+        raise ValueError("finetune must be true or false")
     model_name_from_config(config)
-    preprocessing_options(config)
+    preprocessing = preprocessing_options(config)
     for key in ("image_size", "batch_size", "epochs", "save_every_steps", "cpu_threads"):
         if type(config[key]) is not int or config[key] <= 0:
             raise ValueError(f"{key} must be a positive integer")
@@ -27,6 +32,8 @@ def validate_config(config):
             raise ValueError(f"Invalid {key}")
     if config["image_size"] < 64:
         raise ValueError("image_size must be >= 64")
+    if preprocessing["jpeg_draft_size"] and preprocessing["jpeg_draft_size"] < config["image_size"]:
+        raise ValueError("jpeg_draft_size must be at least image_size")
 
 
 def protect_output(root, output, directory=False):

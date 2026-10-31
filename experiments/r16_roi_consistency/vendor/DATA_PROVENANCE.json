@@ -1,0 +1,13 @@
+{
+  "note": "Hashes of historical data manifests; real rows are not distributed. Generate locally from official CSVs with scripts/manifest_data.py.",
+  "files": {
+    "original/manifests/official_train.csv": {
+      "bytes": 3649136,
+      "sha256": "8a532cedf9e7944b8e6ee2c8581877a82770e0235a1e0642af2c8b9a7d385515"
+    },
+    "original/manifests/official_valid.csv": {
+      "bytes": 403647,
+      "sha256": "a7054e8c7860bbe2b2b30149b011aca6df4f8470e4413af31b0a52a668aa345c"
+    }
+  }
+}

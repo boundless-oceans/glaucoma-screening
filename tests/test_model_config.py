@@ -6,11 +6,12 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from glaucoma_training.model_config import (canonical_config, checkpoint_model_name,
-    default_run_name, load_config, model_name_from_config)
+    default_run_name, load_config, model_name_from_config, uses_age)
 
 
 class ModelConfigChecks(unittest.TestCase):
@@ -78,9 +79,14 @@ class ModelConfigChecks(unittest.TestCase):
             calls.append(("efficientnet_b2", weights))
             return SimpleNamespace(classifier=[None, Linear(1408, 1000)])
 
+        def efficientnet_b0(weights):
+            return SimpleNamespace(classifier=[None, Linear(1280, 1000)])
+
         tree = ast.parse((ROOT / "src" / "glaucoma_training" / "common.py").read_text())
         node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FusionModel")
         namespace = dict(nn=fake_nn, model_name_from_config=model_name_from_config,
+                         uses_age=uses_age, efficientnet_b0=efficientnet_b0,
+                         EfficientNet_B0_Weights=SimpleNamespace(DEFAULT="b0-default"),
                          resnet18=resnet18, efficientnet_b2=efficientnet_b2,
                          ResNet18_Weights=SimpleNamespace(DEFAULT="resnet-default"),
                          EfficientNet_B2_Weights=SimpleNamespace(DEFAULT="b2-default"))
@@ -93,6 +99,31 @@ class ModelConfigChecks(unittest.TestCase):
         self.assertIsInstance(baseline.backbone.fc, Identity)
         self.assertIsInstance(candidate.backbone.classifier, Identity)
         self.assertEqual(calls, [("resnet18", None), ("efficientnet_b2", "b2-default")])
+        local = constructor(model_name="efficientnet_b0", use_age=False)
+        self.assertEqual(local.head[0].in_features, 1280)
+        self.assertFalse(local.use_age)
+
+    def test_local_config_and_legacy_defaults(self):
+        config = canonical_config({})
+        self.assertTrue(config["use_age"])
+        self.assertEqual(config["input_view"], "global")
+        local = load_config(ROOT / "configs/local_b0.json")
+        self.assertFalse(local["use_age"])
+        self.assertEqual(local["input_view"], "local")
+        self.assertEqual(default_run_name("efficientnet_b0", False, True, False, 1280, False, "local"),
+                         "efficientnet_b0_blackborder_draft1280_imageonly_local")
+        for field,value in (("use_age", 0), ("input_view", "typo")):
+            with self.assertRaises(ValueError): canonical_config({field:value})
+
+    def test_image_only_forward_does_not_use_age(self):
+        tree = ast.parse((ROOT / "src/glaucoma_training/common.py").read_text())
+        node = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FusionModel")
+        namespace = dict(nn=SimpleNamespace(Module=object), torch=SimpleNamespace(cat=lambda xs,dim:np.concatenate(xs,axis=dim)))
+        exec(compile(ast.Module(body=[node], type_ignores=[]), "<forward-check>", "exec"), namespace)
+        model = namespace["FusionModel"].__new__(namespace["FusionModel"])
+        model.use_age = False; model.backbone = lambda x:x; model.head = lambda x:x.sum(axis=1, keepdims=True)
+        image = np.ones((2,3))
+        np.testing.assert_array_equal(model.forward(image, np.zeros((2,2))), model.forward(image, np.full((2,2), np.nan)))
 
 
 if __name__ == "__main__":

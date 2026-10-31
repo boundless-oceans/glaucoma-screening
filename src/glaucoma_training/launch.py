@@ -51,7 +51,7 @@ class LoggedSession:
         if self.child is not None and self.child.poll() is None:
             self.child.send_signal(signal.SIGTERM)
 
-    def run(self, name, command, *, optional=False, timeout=None):
+    def run(self, name, command, *, optional=False, timeout=None, accepted_codes=(0,)):
         if self.interrupted:
             raise InterruptedError("Stop requested before the next stage")
         self.log(f"START {name}: {json.dumps([str(x) for x in command])}")
@@ -78,7 +78,7 @@ class LoggedSession:
                         self.child.wait()
                     self.child = None
             self.log(f"END {name}: exit_code={code}")
-            if code != 0 and not optional:
+            if code not in accepted_codes and not optional:
                 raise subprocess.CalledProcessError(code, command)
             return code
         except (OSError, subprocess.TimeoutExpired) as error:
@@ -100,15 +100,31 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--init-checkpoint", type=Path)
+    parser.add_argument("--roi-cache", type=Path)
+    parser.add_argument("--baseline-tolerance", type=float, default=0.00001,
+                        help="Explicit source AUROC/AUPRC reproduction tolerance; default 1e-5")
+    parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Evaluation device")
+    parser.add_argument("--splits", nargs="+", choices=["valid", "test"], default=["valid", "test"])
+    parser.add_argument("--jpeg-draft-size", type=int, help="Validation-only experimental decoder override")
+    parser.add_argument("--fusion-reference-evaluation", type=Path)
     args = parser.parse_args()
     if not math.isfinite(args.max_hours) or args.max_hours < 0:
         parser.error("--max-hours must be finite and nonnegative")
+    if not math.isfinite(args.baseline_tolerance) or not 0 <= args.baseline_tolerance <= 0.001:
+        parser.error("--baseline-tolerance must be within [0, 0.001]")
     if not math.isfinite(args.threshold) or not 0 <= args.threshold <= 1:
         parser.error("--threshold must be within [0, 1]")
     if args.batch_size <= 0 or args.workers < 0:
         parser.error("Invalid batch-size/workers")
     if args.smoke and args.config:
         parser.error("Choose --smoke OR --config")
+    if args.fusion_reference_evaluation and args.mode != "train":
+        parser.error("--fusion-reference-evaluation is for training only")
+    if args.init_checkpoint and args.mode != "train":
+        parser.error("--init-checkpoint is for training only")
+    if args.jpeg_draft_size is not None and (args.mode != "test" or set(args.splits) != {"valid"}):
+        parser.error("Decoder override requires test --splits valid; training uses saved config")
     root = args.data_root.resolve()
     run = args.run_dir.resolve() if args.run_dir else None
     config = (args.config or CONFIG_DIR / ("smoke.json" if args.smoke else "train.json")).resolve()
@@ -128,11 +144,12 @@ def main():
         validate_config(resolved_config)
         sampled = any(resolved_config[k] for k in ("train_limit", "valid_limit", "test_limit"))
         profile_model = resolved_config["model_name"]
-        run = (run or CODE / "runs" / default_run_name(profile_model, sampled, resolved_config["remove_black_border"])).resolve()
+        run = (run or CODE / "runs" / (default_run_name(profile_model, sampled, resolved_config["remove_black_border"], resolved_config["finetune"], resolved_config["jpeg_draft_size"], resolved_config["use_age"], resolved_config["input_view"]) + ("_fusionselect" if args.fusion_reference_evaluation else ""))).resolve()
         state.update(run_dir=str(run), model_profile=profile_model, config_path=str(config))
         write_status(status_path, state)
         write_status(session.directory / "effective_config.json", resolved_config)
         session.log(f"Model profile: {profile_model}; run directory: {run}")
+        session.log(f"Input view: {resolved_config['input_view']}; age input: {resolved_config['use_age']}")
         session.log(f"Black-border removal: {resolved_config['remove_black_border']}; "
                     f"threshold={resolved_config['black_border_threshold']}, margin={resolved_config['black_border_margin']}")
         versions = {}
@@ -159,15 +176,32 @@ def main():
             session.run("preflight", [sys.executable, "-u", "-m", "glaucoma_training.preflight", "--data-root", str(root), "--config", str(config)])
             state["stage"] = "training"
             write_status(status_path, state)
-            session.run("training", [sys.executable, "-u", "-X", "faulthandler", "-m", "glaucoma_training.train",
+            command = [sys.executable, "-u", "-X", "faulthandler", "-m", "glaucoma_training.train",
                         "--data-root", str(root), "--run-dir", str(run), "--config", str(config),
-                        "--max-hours", str(args.max_hours), "--skip-predict"])
+                        "--max-hours", str(args.max_hours), "--skip-predict",
+                        "--baseline-tolerance", str(args.baseline_tolerance)]
+            if args.init_checkpoint:
+                command.extend(["--init-checkpoint", str(args.init_checkpoint.resolve())])
+            if args.roi_cache:
+                command.extend(["--roi-cache", str(args.roi_cache.resolve())])
+            if args.fusion_reference_evaluation:
+                command.extend(["--fusion-reference-evaluation", str(args.fusion_reference_evaluation.resolve())])
+            child_code = session.run("training", command, accepted_codes=(0, 3, 130))
             progress_path = run / "progress.json"
             if progress_path.is_file():
                 state["training_progress"] = json.loads(progress_path.read_text(encoding="utf-8"))
                 state["status"] = state["training_progress"]["status"]
             else:
-                state["status"] = "stopped" if session.interrupted else "finished"
+                raise RuntimeError("Training ended without progress.json")
+            if state["status"] not in ("completed", "paused"):
+                raise RuntimeError(f"Child exited without a terminal training status: {state['status']}")
+            if child_code in (3, 130) and state["status"] != "paused":
+                raise RuntimeError("Child pause/interruption code disagrees with progress.json")
+            if state["status"] == "paused":
+                progress = state["training_progress"]
+                code = 130 if progress.get("stop_reason") == "user_signal" else 3
+                session.log(f"PAUSED: completed epochs={progress['epoch_index']}/{progress['total_epochs']}; "
+                            f"next_batch={progress['next_batch']}. Rerun the same command to resume.")
             session.log("Training invocation ended. Run bash scripts/test.sh once best.pt exists to evaluate and predict.")
         else:
             state["stage"] = "evaluation_and_prediction"
@@ -178,9 +212,14 @@ def main():
             write_status(status_path, state)
             command = [sys.executable, "-u", "-X", "faulthandler", "-m", "glaucoma_training.evaluate", "--data-root", str(root),
                        "--checkpoint", str(checkpoint), "--output-dir", str(output), "--threshold", str(args.threshold),
-                       "--batch-size", str(args.batch_size), "--workers", str(args.workers)]
-            if args.smoke:
+                       "--batch-size", str(args.batch_size), "--workers", str(args.workers),
+                       "--device", args.device, "--splits", *args.splits]
+            if sampled:
                 command.append("--allow-sample")
+            if args.roi_cache:
+                command.extend(["--roi-cache", str(args.roi_cache.resolve())])
+            if args.jpeg_draft_size is not None:
+                command.extend(["--jpeg-draft-size", str(args.jpeg_draft_size)])
             session.run("evaluation and prediction", command)
             state["status"] = "completed"
             session.log(f"Results: {output}")
@@ -190,6 +229,8 @@ def main():
         code = error.returncode if isinstance(error, subprocess.CalledProcessError) else 1
         if code < 0:
             code = 128 - code
+        if session.interrupted:
+            code = 130
         state.update(status="interrupted" if session.interrupted else "failed", error=str(error))
         session.log(traceback.format_exc())
     finally:
