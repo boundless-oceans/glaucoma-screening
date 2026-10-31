@@ -31,6 +31,7 @@ R16角色清单现由prepare脚本从本地官方CSV生成，验证计数、阳�
 - [冻结全图模型与B0局部分支训练](#local-training)
 - [R16 ROI一致性独立实验](#r16-roi-consistency)
 - [原版R16水平翻转TTA对照](#r16-hflip-tta)
+- [便携推理与T4计时](#r16-inference)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
 - [最佳权重短程微调](#finetune)
@@ -116,13 +117,18 @@ R16角色清单现由prepare脚本从本地官方CSV生成，验证计数、阳�
     │   ├── r16_roi_consistency/           # 队长R16独立配方、ROI精度修复与分阶段入口
     │   │   ├── scripts/                  # 纯文件准备、服务器check/assets/train/evaluate
     │   │   ├── tests/                    # 独立CPU契约检查，需要pandas
-    │   │   ├── vendor/                   # 固定历史最小源码与官方数据角色清单
+    │   │   ├── vendor/                   # 固定历史源码和数据来源哈希；不含真实清单
     │   │   └── README.md                 # 环境、材料、命令及one-shot限制
-    │   └── r16_hflip_tta/                 # 原版R16冻结权重的水平翻转推理对照
-    │       ├── scripts/                  # 新目录准备与服务器check/valid入口
-    │       ├── src/r16_tta/               # 身份检查、翻转视图、概率平均及报告
-    │       ├── tests/                    # 不加载模型的CPU检查
-    │       └── README.md                 # 原版材料要求、命令及当前验收范围
+    │   ├── r16_hflip_tta/                 # 原版R16冻结权重的水平翻转推理对照
+    │   │   ├── scripts/                  # 新目录准备与服务器检查/评估/导出
+    │   │   ├── src/r16_tta/               # 身份检查、翻转视图、概率平均及报告
+    │   │   ├── tests/                    # 不加载模型的CPU检查
+    │   │   └── README.md                 # 原版材料要求、命令及当前验收范围
+    │   └── r16_inference/                # 便携冻结推理、原图/翻转选择与T4计时
+    │       ├── scripts/                  # 文件打包及服务器predict/benchmark
+    │       ├── src/r16_deploy/            # 独立推理、元数据和计时契约
+    │       ├── tests/                    # 不导入PyTorch的本地检查
+    │       └── README.md                 # 环境、计时范围和待验收事项
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
     ├── outputs/                          # 预处理预览等生成产物，不入 Git
@@ -716,6 +722,16 @@ python experiments/r16_hflip_tta/tests/test_tta.py
 同轮4090D原图平均约61.83ms、TTA约125.12ms，耗时约翻倍，未做T4验收。保留TTA为候选，不默认替换原版，不生成test提交；结果已归档到工作区outputs/training_results/20261030_r16_hflip_tta_paired/。配方、材料及命令见独立说明。
 
 新增单次翻转候选入口single-check/single-valid/single-test，沿用同一原版权重与定位策略，只做一次翻转后的预测。先完成32图检查及独立完整valid，才允许显式single-test导出有完整顺序校验的5855行submission_single_flip.csv；概率写17位有效数字。该候选是在观察先前valid诊断后选择，既有翻转臂AUROC较高而AP较低，不保证平台收益。19项CPU检查通过；服务器32图工程检查、完整valid和5855图test导出也已完成。单次翻转AUROC=0.9901034351、AP=0.8600360104；4090D valid均值58.53ms、test均值60.85ms，尚非T4验收。候选已核验并下载到工作区outputs/training_results/20261030_r16_single_flip/submission_single_flip.csv，未提交平台。原双视图入口行为不变，详情见独立实验说明。
+
+<a id="r16-inference"></a>
+
+## 便携推理与T4计时
+
+[experiments/r16_inference](experiments/r16_inference/README.md)在全新目录复制固定源码和两份原版权重，生成可校验的便携bundle；运行不依赖训练项目路径、角色清单或历史审计。原图调用未修改的R08Pipeline，单次翻转复用已验证的imaging/pipeline helper。显式--view选择original或single-flip，predict保留元数据顺序导出submission.csv；benchmark只输出逐图概率和计时，不生成提交文件。
+
+计时包含原文件读入、解码、预处理、实时CAM/ROI、全图/局部前向与GPU同步，分别记录模型加载、首次预测和预热后分布，并给出p50/p95/p99、最大值、超过100ms数量、硬件/环境及全量覆盖标记。CPU线程固定8、batch1，非T4和子集测试均不自动标记为官方验收通过。完整计时协议和命令见独立说明。
+
+新增7项CPU检查通过；两份真实权重约142.6MB已完成文件打包与来源哈希核验，本地不加载模型。新加载器/CLI尚待服务器输出一致性和T4实测，不把此前4090D结果直接当成此入口已验收。打包目录含模型，仅供私有运行；源码仓库仍排除权重及数据。
 
 <a id="finetune"></a>
 
