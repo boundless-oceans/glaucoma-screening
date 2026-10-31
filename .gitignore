@@ -5,6 +5,7 @@
 /experiments/r16_roi_consistency/outputs/
 /experiments/r16_hflip_tta/outputs/
 /experiments/r16_inference/outputs/
+/experiments/r16_local_ema/outputs/
 /experiments/r16_roi_consistency/vendor/original/manifests/*.csv
 __pycache__/
 *.py[cod]

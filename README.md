@@ -13,6 +13,7 @@
 |队长R16的ROI一致性对照|experiments/r16_roi_consistency/|服务器训练和验证完成，未超过原版，不替换基线|
 |原版R16审计、双视图及单次翻转|experiments/r16_hflip_tta/|32图检查、完整验证、单次翻转5855图候选导出完成；平台候选分数待反馈|
 |R16便携推理与端到端计时|experiments/r16_inference/|4090D两种视图35图predict及各5849图benchmark通过输出一致性检查；T4待测|
+|R16局部EMA同次训练对照|experiments/r16_local_ema/|6项CPU检查通过，服务器check/资产/正式训练尚未执行|
 |历史B0按融合指标选模|scripts/check_local_pipeline.py --fusion-selection|轻量逻辑检查通过，新增模式的真实模型训练集成仍待运行|
 
 2026-10-31阶段复查：根目录101项、R16配方7项、R16推理19项CPU检查，共127项通过。T4官方环境及单图100ms仍未验收，不能用4090D计时替代。R16使用独立的torch2.10/torchvision0.25环境；不要把旧train.sh、默认320px配置或旧conda环境套进R16入口。
@@ -33,6 +34,7 @@ R16角色清单现由prepare脚本从本地官方CSV生成，验证计数、阳�
 - [R16 ROI一致性独立实验](#r16-roi-consistency)
 - [原版R16水平翻转TTA对照](#r16-hflip-tta)
 - [便携推理与T4计时](#r16-inference)
+- [R16局部分支EMA对照](#r16-local-ema)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
 - [最佳权重短程微调](#finetune)
@@ -125,11 +127,16 @@ R16角色清单现由prepare脚本从本地官方CSV生成，验证计数、阳�
     │   │   ├── src/r16_tta/               # 身份检查、翻转视图、概率平均及报告
     │   │   ├── tests/                    # 不加载模型的CPU检查
     │   │   └── README.md                 # 原版材料要求、命令及当前验收范围
-    │   └── r16_inference/                # 便携冻结推理、原图/翻转选择与T4计时
-    │       ├── scripts/                  # 文件打包及服务器predict/benchmark
-    │       ├── src/r16_deploy/            # 独立推理、元数据和计时契约
-    │       ├── tests/                    # 不导入PyTorch的本地检查
-    │       └── README.md                 # 环境、计时范围和待验收事项
+    │   ├── r16_inference/                # 便携冻结推理、原图/翻转选择与T4计时
+    │   │   ├── scripts/                  # 文件打包及服务器predict/benchmark
+    │   │   ├── src/r16_deploy/            # 独立推理、元数据和计时契约
+    │   │   ├── tests/                    # 不导入PyTorch的本地检查
+    │   │   └── README.md                 # 环境、计时范围和待验收事项
+    │   └── r16_local_ema/                # 独立局部EMA训练与同轮普通权重对照
+    │       ├── scripts/                  # 复用冻结配方生成独立服务器工程
+    │       ├── src/                      # EMA参数更新及服务器集成检查
+    │       ├── tests/                    # 不导入PyTorch的CPU契约检查
+    │       └── README.md                 # 分阶段命令、对照及one-shot边界
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
     ├── outputs/                          # 预处理预览等生成产物，不入 Git
@@ -733,6 +740,14 @@ python experiments/r16_hflip_tta/tests/test_tta.py
 计时包含原文件读入、解码、预处理、实时CAM/ROI、全图/局部前向与GPU同步，分别记录模型加载、首次预测和预热后分布，并给出p50/p95/p99、最大值、超过100ms数量、硬件/环境及全量覆盖标记。CPU线程固定8、batch1，非T4和子集测试均不自动标记为官方验收通过。完整计时协议和命令见独立说明。
 
 新增7项CPU检查通过；两份真实权重共142590240字节，已完成文件打包与来源哈希核验，本地不加载模型。2026-10-31新加载器/CLI在4090D实际完成两种视图各35图predict及5849图benchmark，与此前同机对照逐图概率完全一致。原图/单次翻转AUROC分别为0.9893756512/0.9901034351；稳态均值58.73/62.16ms、p95为86.21/90.85ms，仍分别有91/64图超过100ms，首次预测约9.38/8.28秒。未训练或导出新的test提交。结果及源码快照已下载到工作区outputs/training_results/20261031_r16_portable_inference/，哈希、指标和计时统计已本地CPU复核。T4尚未实测，不能宣称官方时延验收通过。打包目录含模型，仅供私有运行；源码仓库仍排除权重及数据。
+
+<a id="r16-local-ema"></a>
+
+## R16局部分支EMA对照
+
+[experiments/r16_local_ema](experiments/r16_local_ema/README.md)复用R16 ROI一致性配方，在独立新工程中为局部参数增加固定0.999的FP32指数移动平均；buffer直接复制，仅成功优化器更新后计步。全图与CAM冻结，普通权重仍控制patience，普通/EMA各自保存权重、同轮融合验证和独立最佳。仅推理其中一份局部模型，不增加推理模型数量；同次训练的同轮结果是主要对照，不能把与队长不同ROI配方的差异全部解释为EMA效果。
+
+6项本地CPU检查通过，未加载模型或使用本地GPU。服务器check包含真实随机局部更新、强制AMP跳步与EMA状态读回，以及两轮微型合成训练/双验证/选模检查，目前尚未执行；正式训练和分类收益也未验证。沿用R16 one-shot，不支持中间batch恢复，预算提前结束标记stopped_incomplete并返回3。先检查、再生成资产、最后显式训练，命令和预算见独立说明。此项不依赖T4测速，也不承诺提升平台分数。
 
 <a id="finetune"></a>
 
