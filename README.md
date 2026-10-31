@@ -14,6 +14,7 @@
 |原版R16审计、双视图及单次翻转|experiments/r16_hflip_tta/|32图检查、完整验证、单次翻转5855图候选导出完成；平台候选分数待反馈|
 |R16便携推理与端到端计时|experiments/r16_inference/|4090D两种视图35图predict及各5849图benchmark通过输出一致性检查；T4待测|
 |R16局部EMA同次训练对照|experiments/r16_local_ema/|工程check、15轮训练和完整B1验证完成；EMA略优于本轮普通版，未超过原版，不替换基线|
+|R16固定局部权重平均|experiments/r16_local_weight_average/|8项CPU检查通过；服务器build/check/evaluate尚待执行，不重训、不自动导出test|
 |历史B0按融合指标选模|scripts/check_local_pipeline.py --fusion-selection|轻量逻辑检查通过，新增模式的真实模型训练集成仍待运行|
 
 2026-10-31阶段复查：根目录101项、R16配方7项、R16推理19项CPU检查，共127项通过。T4官方环境及单图100ms仍未验收，不能用4090D计时替代。R16使用独立的torch2.10/torchvision0.25环境；不要把旧train.sh、默认320px配置或旧conda环境套进R16入口。
@@ -35,6 +36,7 @@ R16角色清单现由prepare脚本从本地官方CSV生成，验证计数、阳�
 - [原版R16水平翻转TTA对照](#r16-hflip-tta)
 - [便携推理与T4计时](#r16-inference)
 - [R16局部分支EMA对照](#r16-local-ema)
+- [R16固定局部权重平均](#r16-local-weight-average)
 - [环境准备](#environment)
 - [推荐运行顺序](#run-workflow)
 - [最佳权重短程微调](#finetune)
@@ -132,11 +134,16 @@ R16角色清单现由prepare脚本从本地官方CSV生成，验证计数、阳�
     │   │   ├── src/r16_deploy/            # 独立推理、元数据和计时契约
     │   │   ├── tests/                    # 不导入PyTorch的本地检查
     │   │   └── README.md                 # 环境、计时范围和待验收事项
-    │   └── r16_local_ema/                # 独立局部EMA训练与同轮普通权重对照
-    │       ├── scripts/                  # 复用冻结配方生成独立服务器工程
-    │       ├── src/                      # EMA参数更新及服务器集成检查
-    │       ├── tests/                    # 不导入PyTorch的CPU契约检查
-    │       └── README.md                 # 分阶段命令、对照及one-shot边界
+    │   ├── r16_local_ema/                # 独立局部EMA训练与同轮普通权重对照
+    │   │   ├── scripts/                  # 复用冻结配方生成独立服务器工程
+    │   │   ├── src/                      # EMA参数更新及服务器集成检查
+    │   │   ├── tests/                    # 不导入PyTorch的CPU契约检查
+    │   │   └── README.md                 # 分阶段命令、对照及one-shot边界
+    │   └── r16_local_weight_average/     # 原局部与新EMA固定50/50参数平均
+    │       ├── scripts/                  # 纯文件准备及服务器build/check/evaluate
+    │       ├── src/r16_average/          # 兼容性、参数平均和独立原图验证
+    │       ├── tests/                    # 不加载模型的CPU契约检查
+    │       └── README.md                 # 固定范围、父模型复现保护和验收边界
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
     ├── outputs/                          # 预处理预览等生成产物，不入 Git
@@ -752,6 +759,14 @@ python experiments/r16_hflip_tta/tests/test_tta.py
 同日正式流程成功结束：资产11.28分钟、训练76.52分钟、最终两份权重B1复核11.03分钟，总计98.83分钟。完成15轮配对验证、24095次成功更新，由普通分支patience正常停止。普通最佳第10轮最终AUROC/AP为0.9890619593/0.8517480648；EMA最佳第11轮为0.9893025490/0.8559727460。EMA改善了本轮普通对照，但未超过冻结原版的0.9893756512/0.8644753091，不替换原版、不生成test提交。权重、日志、逐图验证及源码快照已下载到工作区outputs/training_results/20261031_r16_local_ema/；独立最佳与同轮对照须区分，正式结果以完整B1复核为准。
 
 沿用R16 one-shot，不支持中间batch恢复，预算提前结束标记stopped_incomplete并返回3。分阶段命令和预算见独立说明。此项不依赖T4测速，当前4090D诊断耗时也不是T4验收，不承诺平台收益。
+
+<a id="r16-local-weight-average"></a>
+
+## R16固定局部权重平均
+
+[experiments/r16_local_weight_average](experiments/r16_local_weight_average/README.md)仅尝试原E33第15轮与新EMA第11轮局部参数固定50/50平均，生成一份新局部网络；全图、CAM和原图融合保持原版。先核对来源、架构、初始化/seed和参数身份/有限性，非参数状态必须相同；保存后严格读回，拒绝覆盖父权重。build/check/evaluate分阶段，固定小样本复核两个父模型的既有概率后才完整评估新候选，不训练、不搜索比例、不自动导出test，也不修改原版便携入口的哈希保护。
+
+8项本地CPU检查通过，尚未在服务器加载真实权重或评估新候选。已有CSV的固定概率平均仅是互补诊断，不是参数平均的实测分数。先在4090D验收，T4性能仍独立待测；不保证平台收益。准备命令、固定材料SHA和依赖见独立说明。
 
 <a id="finetune"></a>
 
