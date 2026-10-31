@@ -16,9 +16,8 @@
   "original/src/glaucoma/local_region.py": "4a83486bc801dafe390cd1a9af2c4cf66c629a900e1735977d434dc5cb3c6ec8",
   "original/tools/run_round_sixteen.py": "bb66f5eafa4fd4bae377841bab8a7e97876ca9f62fd5e8233b2b1fd381073428",
   "original/configs/r16_registration_20261026.json": "1fb9c23bc76378eba10981b84e93f8cc80f06782e9de1ffafe68c507ec68df45",
-  "original/manifests/official_train.csv": "8a532cedf9e7944b8e6ee2c8581877a82770e0235a1e0642af2c8b9a7d385515",
-  "original/manifests/official_valid.csv": "a7054e8c7860bbe2b2b30149b011aca6df4f8470e4413af31b0a52a668aa345c",
   "original/pretrained/local_initializer_provenance.json": "0a9c426ec144a43fe44b07f3522f05355ca11d5d74fd0e39251048d9214172cc",
   "original/pretrained/LICENSE.ConvNeXt": "da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93",
-  "requirements-training.txt": "f1490bd179a675448ece4692879d5d1d1bb4b25d29b4773b24b6fd0d3f996401"
+  "requirements-training.txt": "f1490bd179a675448ece4692879d5d1d1bb4b25d29b4773b24b6fd0d3f996401",
+  "DATA_PROVENANCE.json": "fac05c999e5340c1a6d9857b3935b7fee0f393d5f9a92035c9649e415d6a6d75"
 }

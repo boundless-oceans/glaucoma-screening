@@ -19,12 +19,48 @@ from PIL import Image
 HERE=Path(__file__).resolve().parents[1]
 spec=importlib.util.spec_from_file_location('prepare_recipe',HERE/'scripts/prepare.py')
 prepare=importlib.util.module_from_spec(spec);spec.loader.exec_module(prepare)
+sys.path.insert(0,str(HERE/'tests'))
+from synthetic_data import write_official
 
 
 class RecipeChecks(unittest.TestCase):
+    def test_local_generator_preserves_order_and_exact_serialization(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data=Path(temporary);write_official(data,'valid')
+            first=prepare.manifest_data.render_manifest(data,'valid')
+            with (data/'valid.csv').open(newline='') as stream:rows=list(csv.DictReader(stream))
+            with (data/'valid.csv').open('w',newline='') as stream:
+                writer=csv.DictWriter(stream,fieldnames=rows[0]);writer.writeheader();writer.writerows(reversed(rows))
+            self.assertEqual(first,prepare.manifest_data.render_manifest(data,'valid'))
+            self.assertTrue(first.startswith(b'image_id,relative_path,official_split,role,label,age,patient_id\n'))
+            self.assertNotIn(b'\r',first)
+            with patch.dict(prepare.manifest_data.EXPECTED_SHA,{'valid':hashlib.sha256(first).hexdigest()}):
+                payloads=prepare.manifest_data.manifest_payloads(data,('valid',))
+                paths=prepare.manifest_data.write_manifests(data/'output',payloads)
+                self.assertEqual(paths['valid'].read_bytes(),first)
+                with self.assertRaises(FileExistsError):prepare.manifest_data.write_manifests(data/'output',payloads)
+
+    def test_local_generator_refuses_changed_rows_and_untrusted_hash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data=Path(temporary);write_official(data,'valid')
+            # Artificial fixtures must never pass the real historical data digest.
+            with self.assertRaisesRegex(ValueError,'does not reproduce'):prepare.manifest_data.manifest_payloads(data,('valid',))
+            with (data/'valid.csv').open(newline='') as stream:rows=list(csv.DictReader(stream))
+            def write():
+                with (data/'valid.csv').open('w',newline='') as stream:
+                    writer=csv.DictWriter(stream,fieldnames=rows[0]);writer.writeheader();writer.writerows(rows)
+            rows[0]['Image_name']=rows[1]['Image_name'];write()
+            with self.assertRaisesRegex(ValueError,'Duplicate'):prepare.manifest_data.render_manifest(data,'valid')
+            rows[0]['Image_name']='../escape.jpg';write()
+            with self.assertRaisesRegex(ValueError,'JPEG name'):prepare.manifest_data.render_manifest(data,'valid')
+            rows[0]['Image_name']='valid_00000.jpg';rows[0]['True_Label']='2';write()
+            with self.assertRaisesRegex(ValueError,'binary'):prepare.manifest_data.render_manifest(data,'valid')
+
     def test_vendored_sources_and_patches_are_narrow(self):
         records=json.loads((HERE/'vendor/SOURCE_SHA256.json').read_bytes())
-        for name,expected in records.items():self.assertEqual(prepare.sha(HERE/'vendor'/name),expected)
+        for name,expected in records.items():
+            self.assertEqual(prepare.sha(HERE/'vendor'/name),expected)
+            self.assertNotIn(b'\r\n',(HERE/'vendor'/name).read_bytes())
         data,controller=prepare.patched_sources(HERE/'vendor')
         original=(HERE/'vendor/original/src/glaucoma/data.py').read_text(encoding='utf-8-sig')
         self.assertEqual(data.replace(",float_precision='round_trip'",''),original)
@@ -43,16 +79,12 @@ class RecipeChecks(unittest.TestCase):
     def test_preparation_never_loads_models_or_overwrites_existing_project(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);data=root/'data';data.mkdir()
-            for split in ('train','valid'):
-                with (HERE/f'vendor/original/manifests/official_{split}.csv').open(encoding='utf-8',newline='') as stream:
-                    rows=list(csv.DictReader(stream))
-                with (data/(split+'.csv')).open('w',encoding='utf-8',newline='') as stream:
-                    writer=csv.writer(stream);writer.writerow(['Image_name','True_Label'])
-                    writer.writerows((r['image_id'],r['label']) for r in rows)
+            for split in ('train','valid'):write_official(data,split)
+            fake_hashes={split:hashlib.sha256(prepare.manifest_data.render_manifest(data,split)).hexdigest() for split in ('train','valid')}
             weights=root/'best.pt';weights.write_bytes(b'not-deserialized-test-fixture')
             target=root/'project'
             argv=['prepare','--output',str(target),'--data-root',str(data),'--global-checkpoint',str(weights)]
-            with patch.object(prepare,'GLOBAL_SHA',prepare.sha(weights)),patch.object(sys,'argv',argv):
+            with patch.object(prepare,'GLOBAL_SHA',prepare.sha(weights)),patch.dict(prepare.manifest_data.EXPECTED_SHA,fake_hashes),patch.object(sys,'argv',argv):
                 prepare.main()
                 with self.assertRaises(FileExistsError):prepare.main()
             meta=json.loads((target/'PREPARATION.json').read_bytes())

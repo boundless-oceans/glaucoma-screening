@@ -5,8 +5,11 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import sys
 
 HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(HERE/'scripts'))
+import manifest_data
 GLOBAL_SHA = 'b130ffe685e8e945b18184abbcc159135e87a537d2a5824222d927791cd5b6d2'
 LOCAL_INITIALIZER_SHA = 'f22f8850dcded245f4ae3bc402bbde9c6f5e4e23e76dfaea3aadb75aa9d3705a'
 
@@ -75,7 +78,7 @@ def main():
     vendor=HERE/'vendor'; records=json.loads((vendor/'SOURCE_SHA256.json').read_bytes())
     for name,expected in records.items():
         if sha(vendor/name)!=expected: raise ValueError('Vendored file differs: '+name)
-    split_registration=build_split_registration(data,vendor/'original/manifests')
+    payloads=manifest_data.manifest_payloads(data)
     patched_data, patched_controller=patched_sources(vendor)
     target.mkdir(parents=True)
     (target/'runs').mkdir()
@@ -91,9 +94,9 @@ def main():
     config.pop('server_port',None)
     (target/'configs').mkdir()
     (target/'configs/r16_registration_20261026.json').write_text(json.dumps(config,indent=2),encoding='utf-8')
-    manifest_dir=target/'manifests';manifest_dir.mkdir()
-    for split in ('train','valid'):
-        shutil.copyfile(vendor/f'original/manifests/official_{split}.csv',manifest_dir/(split+'.csv'))
+    manifest_dir=target/'manifests'
+    manifest_data.write_manifests(manifest_dir,payloads)
+    split_registration=build_split_registration(data,manifest_dir)
     pretrained=target/'pretrained/convnext22k_r10';pretrained.mkdir(parents=True)
     shutil.copyfile(vendor/'original/pretrained/local_initializer_provenance.json',pretrained/'provenance.json')
     shutil.copyfile(vendor/'original/pretrained/LICENSE.ConvNeXt',pretrained/'LICENSE')
@@ -103,6 +106,7 @@ def main():
     metadata=dict(variant='r16_roi_consistency',global_checkpoint=str(weights),global_checkpoint_sha256=GLOBAL_SHA,
         data_root=str(data),official_csv_sha256={s:sha(data/(s+'.csv')) for s in ('train','valid')},
         generic_local_initializer_sha256=LOCAL_INITIALIZER_SHA,
+        role_manifests_generated_locally=True,manifest_generator_sha256=sha(HERE/'scripts/manifest_data.py'),
         vendored_source_sha256=records,
         original_source_sha256=json.loads((vendor/'UPSTREAM_SHA256.json').read_bytes()),
         source_sha256={p.relative_to(target).as_posix():sha(p) for folder in ('src','tools','configs','manifests','pretrained')

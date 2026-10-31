@@ -25,15 +25,15 @@ from glaucoma.local_region import prepare_shared,crop_decoded
 
 spec=importlib.util.spec_from_file_location('prepare_tta',HERE/'scripts/prepare.py')
 prepare=importlib.util.module_from_spec(spec);spec.loader.exec_module(prepare)
+sys.path.insert(0,str(HERE.parent/'r16_roi_consistency/tests'))
+from synthetic_data import write_official
 
 
 def fixtures(root):
     data=root/'data';data.mkdir()
-    manifest=HERE.parent/'r16_roi_consistency/vendor/original/manifests/official_valid.csv'
+    write_official(data,'valid')
+    manifest=root/'synthetic_valid.csv';manifest.write_bytes(prepare.manifest_data.render_manifest(data,'valid'))
     rows=contracts.read_csv(manifest)
-    with (data/'valid.csv').open('w',encoding='utf-8',newline='') as stream:
-        writer=csv.writer(stream);writer.writerow(['Image_name','True_Label'])
-        writer.writerows((r['image_id'],r['label']) for r in rows)
     reference=root/'reference.csv'
     with reference.open('w',encoding='utf-8',newline='') as stream:
         writer=csv.writer(stream);writer.writerow(['Image_name','Label','Probability','Pred_Label'])
@@ -247,7 +247,7 @@ class TtaContracts(unittest.TestCase):
 
     def test_preparation_pins_old_weights_and_never_overwrites(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary);data,_,reference=fixtures(root)
+            root=Path(temporary);data,generated,reference=fixtures(root)
             weights={name:root/(name+'.pt') for name in contracts.WEIGHTS}
             for name,path in weights.items():path.write_bytes(('undecodable-'+name).encode())
             target=root/'project'
@@ -258,7 +258,7 @@ class TtaContracts(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'original R16'):prepare.main()
                 self.assertFalse(target.exists())
                 fake={name:contracts.sha(path) for name,path in weights.items()}
-                with patch.object(prepare,'WEIGHTS',fake),patch.object(prepare,'REFERENCE_SHA',contracts.sha(reference)):
+                with patch.object(prepare,'WEIGHTS',fake),patch.object(prepare,'REFERENCE_SHA',contracts.sha(reference)),patch.dict(prepare.manifest_data.EXPECTED_SHA,{'valid':contracts.sha(generated)}):
                     prepare.main()
                     with self.assertRaises(FileExistsError):prepare.main()
                 with patch.object(evaluate,'WEIGHTS',fake),patch.object(evaluate,'REFERENCE_SHA',contracts.sha(reference)):
