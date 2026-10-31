@@ -13,7 +13,7 @@
 |队长R16的ROI一致性对照|experiments/r16_roi_consistency/|服务器训练和验证完成，未超过原版，不替换基线|
 |原版R16审计、双视图及单次翻转|experiments/r16_hflip_tta/|32图检查、完整验证、单次翻转5855图候选导出完成；平台候选分数待反馈|
 |R16便携推理与端到端计时|experiments/r16_inference/|4090D两种视图35图predict及各5849图benchmark通过输出一致性检查；T4待测|
-|R16局部EMA同次训练对照|experiments/r16_local_ema/|6项CPU检查通过，服务器check/资产/正式训练尚未执行|
+|R16局部EMA同次训练对照|experiments/r16_local_ema/|工程check、15轮训练和完整B1验证完成；EMA略优于本轮普通版，未超过原版，不替换基线|
 |历史B0按融合指标选模|scripts/check_local_pipeline.py --fusion-selection|轻量逻辑检查通过，新增模式的真实模型训练集成仍待运行|
 
 2026-10-31阶段复查：根目录101项、R16配方7项、R16推理19项CPU检查，共127项通过。T4官方环境及单图100ms仍未验收，不能用4090D计时替代。R16使用独立的torch2.10/torchvision0.25环境；不要把旧train.sh、默认320px配置或旧conda环境套进R16入口。
@@ -747,7 +747,11 @@ python experiments/r16_hflip_tta/tests/test_tta.py
 
 [experiments/r16_local_ema](experiments/r16_local_ema/README.md)复用R16 ROI一致性配方，在独立新工程中为局部参数增加固定0.999的FP32指数移动平均；buffer直接复制，仅成功优化器更新后计步。全图与CAM冻结，普通权重仍控制patience，普通/EMA各自保存权重、同轮融合验证和独立最佳。仅推理其中一份局部模型，不增加推理模型数量；同次训练的同轮结果是主要对照，不能把与队长不同ROI配方的差异全部解释为EMA效果。
 
-6项本地CPU检查通过，未加载模型或使用本地GPU。服务器check包含真实随机局部更新、强制AMP跳步与EMA状态读回，以及两轮微型合成训练/双验证/选模检查，目前尚未执行；正式训练和分类收益也未验证。沿用R16 one-shot，不支持中间batch恢复，预算提前结束标记stopped_incomplete并返回3。先检查、再生成资产、最后显式训练，命令和预算见独立说明。此项不依赖T4测速，也不承诺提升平台分数。
+6项本地CPU检查通过，未加载模型或使用本地GPU。2026-10-31提交1b0b3b4在4090D完成工程check（约30.48秒）：32/32图像素核对、随机局部2次更新与EMA计数、1次强制AMP跳步、EMA状态读回，以及两轮微型合成训练/双验证/选模均通过。工程报告位于工作区outputs/training_results/20261031_r16_local_ema_check/；合成分数不作模型效果证据。
+
+同日正式流程成功结束：资产11.28分钟、训练76.52分钟、最终两份权重B1复核11.03分钟，总计98.83分钟。完成15轮配对验证、24095次成功更新，由普通分支patience正常停止。普通最佳第10轮最终AUROC/AP为0.9890619593/0.8517480648；EMA最佳第11轮为0.9893025490/0.8559727460。EMA改善了本轮普通对照，但未超过冻结原版的0.9893756512/0.8644753091，不替换原版、不生成test提交。权重、日志、逐图验证及源码快照已下载到工作区outputs/training_results/20261031_r16_local_ema/；独立最佳与同轮对照须区分，正式结果以完整B1复核为准。
+
+沿用R16 one-shot，不支持中间batch恢复，预算提前结束标记stopped_incomplete并返回3。分阶段命令和预算见独立说明。此项不依赖T4测速，当前4090D诊断耗时也不是T4验收，不承诺平台收益。
 
 <a id="finetune"></a>
 
