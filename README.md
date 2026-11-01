@@ -14,7 +14,7 @@
 |原版R16审计、双视图及单次翻转|experiments/r16_hflip_tta/|32图检查、完整验证、单次翻转5855图候选导出完成；平台候选分数待反馈|
 |R16便携推理与端到端计时|experiments/r16_inference/|4090D两种视图35图predict及各5849图benchmark通过输出一致性检查；T4待测|
 |R16局部EMA同次训练对照|experiments/r16_local_ema/|工程check、15轮训练和完整B1验证完成；EMA略优于本轮普通版，未超过原版，不替换基线|
-|R16固定局部权重平均|experiments/r16_local_weight_average/|8项CPU检查通过；服务器build/check/evaluate尚待执行，不重训、不自动导出test|
+|R16固定局部权重平均|experiments/r16_local_weight_average/|build/check/完整验证完成，AUROC 0.988944低于两父模型，不采用、不搜索比例|
 |历史B0按融合指标选模|scripts/check_local_pipeline.py --fusion-selection|轻量逻辑检查通过，新增模式的真实模型训练集成仍待运行|
 
 2026-10-31阶段复查：根目录101项、R16配方7项、R16推理19项CPU检查，共127项通过。T4官方环境及单图100ms仍未验收，不能用4090D计时替代。R16使用独立的torch2.10/torchvision0.25环境；不要把旧train.sh、默认320px配置或旧conda环境套进R16入口。
@@ -766,7 +766,9 @@ python experiments/r16_hflip_tta/tests/test_tta.py
 
 [experiments/r16_local_weight_average](experiments/r16_local_weight_average/README.md)仅尝试原E33第15轮与新EMA第11轮局部参数固定50/50平均，生成一份新局部网络；全图、CAM和原图融合保持原版。先核对来源、架构、初始化/seed和参数身份/有限性，非参数状态必须相同；保存后严格读回，拒绝覆盖父权重。build/check/evaluate分阶段，固定小样本复核两个父模型的既有概率后才完整评估新候选，不训练、不搜索比例、不自动导出test，也不修改原版便携入口的哈希保护。
 
-8项本地CPU检查通过，尚未在服务器加载真实权重或评估新候选。已有CSV的固定概率平均仅是互补诊断，不是参数平均的实测分数。先在4090D验收，T4性能仍独立待测；不保证平台收益。准备命令、固定材料SHA和依赖见独立说明。
+8项本地CPU检查通过。2026-10-31提交39ffe83已在4090D完成build/check及完整5849图原图验证，整个流程约356.82秒；两父模型35图概率与参考逐张完全相同。固定权重平均最终AUROC/AP为0.9889439778/0.8578917955，低于原版的0.9893756512/0.8644753091；AUROC也低于新EMA的0.9893025490，不采用，不继续搜索比例或自动叠加翻转。结果及新权重已归档到工作区outputs/training_results/20261031_r16_local_weight_average/，40文件哈希、顺序和指标CPU复算通过。没有训练、test导出或平台提交。
+
+已有CSV的固定概率平均仅是互补诊断，不是参数平均的实测分数；本次结果也说明两种操作不能等同。4090D时延仍不是T4验收；准备命令、固定材料SHA和依赖见独立说明。
 
 <a id="finetune"></a>
 
