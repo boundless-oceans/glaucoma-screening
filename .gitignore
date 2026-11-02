@@ -7,6 +7,7 @@
 /experiments/r16_inference/outputs/
 /experiments/r16_local_ema/outputs/
 /experiments/r16_local_weight_average/outputs/
+/experiments/r27_single_flip/outputs/
 /experiments/r16_roi_consistency/vendor/original/manifests/*.csv
 __pycache__/
 *.py[cod]

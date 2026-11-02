@@ -1,0 +1,70 @@
+{
+  "inference/manifest.json": {
+    "bytes": 1723,
+    "sha256": "91efcb5ccbfac28c43fbc133ef0a62f5041ec54cf53ed06753374502bc459947"
+  },
+  "inference/config.json": {
+    "bytes": 941,
+    "sha256": "0878a3abd69a56977afa5176d7b331c29c33f8551e6aabf866618951690a45c6"
+  },
+  "inference/glaucoma/__init__.py": {
+    "bytes": 50,
+    "sha256": "6e4c162d676a630955857990377d64ba76dd4aaaec698b476cff4a8cc6280d60"
+  },
+  "inference/glaucoma/data.py": {
+    "bytes": 7195,
+    "sha256": "3b847d7f5fc78cc756a461aa828321f14b9a6d075f1355664dd43825bd3f46e9"
+  },
+  "inference/glaucoma/local_region.py": {
+    "bytes": 5595,
+    "sha256": "4a83486bc801dafe390cd1a9af2c4cf66c629a900e1735977d434dc5cb3c6ec8"
+  },
+  "inference/glaucoma/models.py": {
+    "bytes": 1562,
+    "sha256": "b6b9af131524302bbf34f346d3a4a8e94386e9822df3087706c0adfccabb2c78"
+  },
+  "inference/glaucoma/r23_geometry.py": {
+    "bytes": 1727,
+    "sha256": "411b1ea9eed4430adbc7da300da9990a4242c4c7198eb94ed70d722181320e79"
+  },
+  "inference/glaucoma/r23_model.py": {
+    "bytes": 1692,
+    "sha256": "20f3ea88b55f717ede8e97439c9711464b5f0e13457d45d4237f40b38dfecdee"
+  },
+  "inference/glaucoma/r24_protocol.py": {
+    "bytes": 2400,
+    "sha256": "bca6ec458df542c42136ac6c28d6f193f39c6221159bcaca6ed715fb11389c16"
+  },
+  "inference/glaucoma/r27_geometry.py": {
+    "bytes": 1904,
+    "sha256": "9fddfd60b1df5d42bd15b8339459b2590bd786e153cd858aed419a55a747371f"
+  },
+  "inference/predict.py": {
+    "bytes": 6106,
+    "sha256": "75d8bc8c8e065bea1daabe91ab14211d6cdd6c806455a1ca232b43fb4e7dd641"
+  },
+  "inference/weights/global.pt": {
+    "bytes": 31247361,
+    "sha256": "b130ffe685e8e945b18184abbcc159135e87a537d2a5824222d927791cd5b6d2"
+  },
+  "inference/weights/local.pt": {
+    "bytes": 111342431,
+    "sha256": "76aa0e1701a392b624d228fc5a896e89a05df3371d6af584f3bd86c3601cf390"
+  },
+  "inference/weights/locator.pt": {
+    "bytes": 889179,
+    "sha256": "a50079a469eadbdf2cb371886984541739510b0874aeb81ddc4944398f77a4dc"
+  },
+  "metadata/official_valid.csv": {
+    "bytes": 403647,
+    "sha256": "a7054e8c7860bbe2b2b30149b011aca6df4f8470e4413af31b0a52a668aa345c"
+  },
+  "metadata/test_manifest.csv": {
+    "bytes": 304524,
+    "sha256": "f683a8fcdf0d5c6d7450c591a015c70c67263412c7b487caff5d63a40a457118"
+  },
+  "predictions/valid_branches.csv": {
+    "bytes": 760816,
+    "sha256": "efdfbafe8ced654606dc31d11679501c2510293c1ae7900b62a64d742e558838"
+  }
+}

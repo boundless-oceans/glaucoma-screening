@@ -15,6 +15,7 @@
 |R16便携推理与端到端计时|experiments/r16_inference/|4090D两种视图35图predict及各5849图benchmark通过输出一致性检查；T4待测|
 |R16局部EMA同次训练对照|experiments/r16_local_ema/|工程check、15轮训练和完整B1验证完成；EMA略优于本轮普通版，未超过原版，不替换基线|
 |R16固定局部权重平均|experiments/r16_local_weight_average/|build/check/完整验证完成，AUROC 0.988944低于两父模型，不采用、不搜索比例|
+|R27原版与单次翻转配对验证|[experiments/r27_single_flip/](experiments/r27_single_flip/README.md)|固定队长三份权重与30% ROI，10项CPU检查及本地材料准备通过；服务器真实模型尚未运行|
 |历史B0按融合指标选模|scripts/check_local_pipeline.py --fusion-selection|轻量逻辑检查通过，新增模式的真实模型训练集成仍待运行|
 
 2026-10-31阶段复查：根目录101项、R16配方7项、R16推理19项CPU检查，共127项通过。T4官方环境及单图100ms仍未验收，不能用4090D计时替代。R16使用独立的torch2.10/torchvision0.25环境；不要把旧train.sh、默认320px配置或旧conda环境套进R16入口。
@@ -139,11 +140,16 @@ R16角色清单现由prepare脚本从本地官方CSV生成，验证计数、阳�
     │   │   ├── src/                      # EMA参数更新及服务器集成检查
     │   │   ├── tests/                    # 不导入PyTorch的CPU契约检查
     │   │   └── README.md                 # 分阶段命令、对照及one-shot边界
-    │   └── r16_local_weight_average/     # 原局部与新EMA固定50/50参数平均
-    │       ├── scripts/                  # 纯文件准备及服务器build/check/evaluate
-    │       ├── src/r16_average/          # 兼容性、参数平均和独立原图验证
-    │       ├── tests/                    # 不加载模型的CPU契约检查
-    │       └── README.md                 # 固定范围、父模型复现保护和验收边界
+    │   ├── r16_local_weight_average/     # 原局部与新EMA固定50/50参数平均
+    │   │   ├── scripts/                  # 纯文件准备及服务器build/check/evaluate
+    │   │   ├── src/r16_average/          # 兼容性、参数平均和独立原图验证
+    │   │   ├── tests/                    # 不加载模型的CPU契约检查
+    │   │   └── README.md                 # 固定范围、父模型复现保护和验收边界
+    │   └── r27_single_flip/              # R27监督定位＋30% ROI，原图/单次翻转配对
+    │       ├── run.py                    # prepare/check/evaluate/显式export
+    │       ├── adapter.py                # 保留原版预测体，替换输入视图准备
+    │       ├── test_cpu.py               # 合成流程及原版源码/图像检查
+    │       └── README.md                 # 材料、运行步骤和结果边界
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
     ├── outputs/                          # 预处理预览等生成产物，不入 Git
