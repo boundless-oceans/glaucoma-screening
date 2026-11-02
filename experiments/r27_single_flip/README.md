@@ -61,3 +61,35 @@ evaluate：5849张/191阳性完整valid，同一进程共享三份只读模型�
 输出5855行submission_single_flip.csv，官方顺序、连续概率17位有效数字、0.5硬标签及文件SHA256。测试无标签，不计算test AUROC。export同样保留逐图trace，不提交平台。
 
 当前状态：10项CPU检查通过，队长材料哈希及本地prepare通过。Windows默认临时目录受沙箱权限影响，检查使用工作区outputs临时目录在解除该限制后运行；未导入PyTorch或使用GPU。尚未进行R27真实模型配对验证，暂无翻转收益结论。
+
+## 复现失败后的离线排查
+
+2026-11-02服务器完整配对已执行，但原版相对队长参考的最大概率差0.089172超出0.001门限，未生成完成标记或test提交。原版AUROC为0.989575526、AP为0.871035833；翻转AUROC为0.990119629、AP为0.873973351。当前只能报告这次同机对照，不能宣称原版复现验收通过。31张ROI不同：28张最多差1像素、3张有明显纵向偏移；概率超限3张与明显ROI偏移3张合计涉及5张图片。已重复检查的3张概率异常样本同机结果稳定，跨环境具体原因仍未知。
+
+独立CPU诊断工具不修改原版模型、项目完成状态或运行源码：
+
+```bash
+python experiments/r27_single_flip/tools/audit_preprocessing.py \
+  --materials-root /path/to/R27_extracted \
+  --data-root /path/to/glaucoma_first \
+  --output /path/to/new_preprocessing_fingerprints.json
+```
+
+固定核查valid_00163、02776、03407、05455、05673五张图，记录JPEG、EXIF/RGB解码、全图输入、定位器RGB256及归一化float32数组哈希和相关源码/依赖版本。输出必须是新文件；不导入PyTorch、不加载权重。本地五图指纹生成已通过，但不能代替队长原环境运行。两边按上述顺序比较：首个不一致层决定先查数据、解码/缩放还是归一化；若所有输入均一致，再在服务器比较定位热图及计算精度设置。热图存在接近峰值仅解释敏感机制，不能单凭它认定差异原因。
+
+### 定位器TF32五图对照（待服务器运行）
+
+实际4090D的五图预处理指纹已与队长完全一致；同一队长脚本在4090D复现了定位热图差异。相关输出归档在本地忽略的outputs/training_results/r27_gpu_replay_20261102。两边记录的cuDNN版本与TF32开关相同，具体差异不能唯一归因于某一个环境因素。
+
+下一步只比较五图原版与定位器关闭TF32，各重复3次，交替次序。模型、图像、分类器精度、ROI规则及阈值不变。独立脚本临时包装定位器forward，在内部cuDNN上下文关闭TF32，调用结束和异常退出后恢复；不覆盖原版源码或先前阶段完成标记。热图转CPU用于诊断，其耗时不能用作推理验收。没有训练、选模或导出提交。
+
+```bash
+/root/r16-roi-env/bin/python -u \
+  /path/to/training/experiments/r27_single_flip/tools/audit_locator_tf32.py \
+  --code-root /root/autodl-tmp/r27_single_flip_code_20261102/training \
+  --materials-root /root/autodl-tmp/r27_materials_20261102 \
+  --data-root /root/autodl-tmp/glaucoma_first \
+  --output-dir /root/autodl-tmp/r27_locator_tf32_audit_20261102
+```
+
+本地help和Windows拒绝模型执行入口检查通过，未加载模型；服务器结果待运行。仅同一台4090D开启/关闭TF32的比较不能证明跨GPU一致性，需要与队长运行同一诊断后的热图及ROI继续核对。关闭TF32也不保证与历史原版结果一致。
