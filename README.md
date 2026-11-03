@@ -15,7 +15,7 @@
 |R16便携推理与端到端计时|experiments/r16_inference/|4090D两种视图35图predict及各5849图benchmark通过输出一致性检查；T4待测|
 |R16局部EMA同次训练对照|experiments/r16_local_ema/|工程check、15轮训练和完整B1验证完成；EMA略优于本轮普通版，未超过原版，不替换基线|
 |R16固定局部权重平均|experiments/r16_local_weight_average/|build/check/完整验证完成，AUROC 0.988944低于两父模型，不采用、不搜索比例|
-|R27原版与单次翻转配对验证|[experiments/r27_single_flip/](experiments/r27_single_flip/README.md)|固定队长三份权重与30% ROI，10项CPU检查及本地材料准备通过；服务器真实模型尚未运行|
+|R27原版与单次翻转配对验证|[experiments/r27_single_flip/](experiments/r27_single_flip/README.md)|原版完整对照已运行但旧参考核验失败；跨GPU五图支持仅定位器关闭TF32，新候选入口12项CPU检查通过，真实完整验证待运行|
 |历史B0按融合指标选模|scripts/check_local_pipeline.py --fusion-selection|轻量逻辑检查通过，新增模式的真实模型训练集成仍待运行|
 
 2026-10-31阶段复查：根目录101项、R16配方7项、R16推理19项CPU检查，共127项通过。T4官方环境及单图100ms仍未验收，不能用4090D计时替代。R16使用独立的torch2.10/torchvision0.25环境；不要把旧train.sh、默认320px配置或旧conda环境套进R16入口。

@@ -77,7 +77,7 @@ python experiments/r27_single_flip/tools/audit_preprocessing.py \
 
 固定核查valid_00163、02776、03407、05455、05673五张图，记录JPEG、EXIF/RGB解码、全图输入、定位器RGB256及归一化float32数组哈希和相关源码/依赖版本。输出必须是新文件；不导入PyTorch、不加载权重。本地五图指纹生成已通过，但不能代替队长原环境运行。两边按上述顺序比较：首个不一致层决定先查数据、解码/缩放还是归一化；若所有输入均一致，再在服务器比较定位热图及计算精度设置。热图存在接近峰值仅解释敏感机制，不能单凭它认定差异原因。
 
-### 定位器TF32五图对照（待服务器运行）
+### 定位器TF32五图对照（服务器诊断完成，暂不采用）
 
 实际4090D的五图预处理指纹已与队长完全一致；同一队长脚本在4090D复现了定位热图差异。相关输出归档在本地忽略的outputs/training_results/r27_gpu_replay_20261102。两边记录的cuDNN版本与TF32开关相同，具体差异不能唯一归因于某一个环境因素。
 
@@ -92,4 +92,39 @@ python experiments/r27_single_flip/tools/audit_preprocessing.py \
   --output-dir /root/autodl-tmp/r27_locator_tf32_audit_20261102
 ```
 
-本地help和Windows拒绝模型执行入口检查通过，未加载模型；服务器结果待运行。仅同一台4090D开启/关闭TF32的比较不能证明跨GPU一致性，需要与队长运行同一诊断后的热图及ROI继续核对。关闭TF32也不保证与历史原版结果一致。
+本地help和Windows拒绝模型执行入口检查通过，未加载模型。服务器完成五图两种设置各3次，共30次推理；独立核验归档/完成标记哈希及每臂重复热图、ROI、概率完全一致，全图分类logit在两臂相同。关闭定位器TF32使02776、05455的ROI恢复到历史框，但00163、03407、05673的ROI及概率未变，三个概率超限仍未解决。故暂不采用，不启动完整验证或生成test提交。产物归档在本地忽略的outputs/training_results/r27_locator_tf32_audit_20261102。
+
+仅同一台4090D开启/关闭TF32的比较不能证明跨GPU一致性，需要与队长运行同一诊断后的热图及ROI继续核对。关闭TF32也不保证与历史原版结果一致，不通过反复调参追求三张历史概率。
+
+跨机报告比较工具为tools/compare_tf32_reports.py，仅用CPU。它要求两份报告各含完整五图、两臂、各3次且每臂ROI/中心/概率/峰值索引重复一致；比较每臂跨机ROI、中心和概率。自比较五图全部一致、重复记录和重复不一致拒绝检查已通过，没有加载模型。完整交付包在忽略的outputs/training_results/r27_tf32_team_handoff_ready_20261102.zip，包含core.py、固定材料清单、诊断/比较脚本、4090D参考和run_captain.sh。此前小包未包含core.py及材料清单，应使用此次完整包。队长的同设置TF32对照尚未收到，不能预报结果。
+
+### 2026-11-03跨GPU回复：支持进入新候选完整验证
+
+队长同脚本结果已收到，完成标记哈希与热图独立核验通过，重新生成的比较与其comparison.json一致。原版定位器TF32开启时，五图两台机器ROI均不同；两边均关闭定位器TF32后，5/5完整定位热图逐元素相同、中心和ROI全部一致。最终概率最大差约0.00001586783，FP16分类器并非逐位一致。每臂三次重复稳定。
+
+因此修正上述仅有单机诊断时的暂缓结论：值得将“仅定位器关闭TF32”作为独立候选进行完整valid和延迟验证；不代表已在所有图片/其他GPU通过，也不保证平台提分。结果归档在忽略的outputs/training_results/20261103_r27_crossgpu_tf32。
+
+新候选必须独立建工程：原图和翻转都采用同一关闭定位器TF32策略；明确旧参考采用不同策略，保留其差异审计，不冒充复现旧概率。不得修改旧失败阶段的完成标记或放宽旧门限。当前run.py仍为原版设置；新设置使用下方独立入口。
+
+## 独立稳定性候选入口（代码已检查，服务器完整验证待运行）
+
+`run_stable.py`固定采用仅定位器TF32关闭策略，不提供其他精度/阈值搜索选项。`stable_precision.py`将该上下文限定在定位器forward内，包括异常路径的恢复，分类器仍使用队长原版FP16设置。权重及上游源码哈希保护不变；额外固定队长TF32诊断report.json的SHA256（fc14c192...），拒绝替换为任意参考。
+
+```bash
+python experiments/r27_single_flip/run_stable.py prepare \
+  --project /root/autodl-tmp/r27_stable_candidate_20261103 \
+  --materials-root /root/autodl-tmp/r27_materials_20261102 \
+  --data-root /root/autodl-tmp/glaucoma_first \
+  --tf32-reference /path/to/captain_tf32_reply/captain_result/report.json
+
+python experiments/r27_single_flip/run_stable.py check \
+  --project /root/autodl-tmp/r27_stable_candidate_20261103
+python experiments/r27_single_flip/run_stable.py evaluate \
+  --project /root/autodl-tmp/r27_stable_candidate_20261103
+```
+
+必须在新代码副本和新工程中prepare，不覆盖旧服务器代码。先check，成功才evaluate；不自动导出test。原来的固定32张抽样增加五张异常图，去重后实际37张；两臂重复概率差≤1e-7、裁剪RGB/ROI等逐值一致，关闭翻转适配器与原图实现也须一致。五张原图相对队长**TF32关闭**参考ROI必须完全相同且概率差≤0.001。check全量trace纳入完成标记哈希。
+
+完整5849张对照中，check的原图/翻转样本必须全部与当前新设置的小样本记录一致；再检查队长五张参考。报告中的baseline_gate明确列出这些通过条件，旧TF32开启的reference_audit只作差异记录并注明设置不同。它不是对旧失败阶段的门限放宽，且不声称所有图片跨GPU相同。完整指标及当前GPU延迟均重新计算；T4仍待验收。显式export还要求新设置完整验证通过且翻转AUROC优于同设置原图。
+
+本地`test_stable.py`两项检查通过，覆盖正常/异常时定位精度上下文恢复，以及合成prepare→check→evaluate→export流程、旧参考不一致但新条件明确通过、重复不一致和五图ROI异常拒绝；原10项CPU检查回归通过。没有本地模型加载或GPU运行。服务器新入口的真实小样本集成和完整验证仍待进行，不能把合成检查当作真实模型结果。
