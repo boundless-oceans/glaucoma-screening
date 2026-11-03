@@ -156,3 +156,33 @@ test_detail_crop.py两项合成CPU检查覆盖物理范围映射、越界填充�
 同日进一步复核：原型支持显式mirrored视图；调用方必须传入**该视图重新定位后**的ROI，不能把原图ROI直接作为翻转ROI。实现先将翻转视图框反射回原图坐标，裁剪后只镜像局部区域；与整图镜像后裁剪相同，包括越界黑填充，避免额外的整图镜像复制。EXIF已校正且为RGB时不进行整图exif_transpose/convert复制。真实解码仍会占用CPU和内存，不宣称已证明训练提速。
 
 现4项合成CPU检查通过，新增非法/非有限尺寸拒绝与含越界的翻转等价性；另对5张官方训练JPEG各运行原图/翻转两种预处理，共10次均通过。上述检查不运行定位器，使用固定几何仅检验裁剪函数；并未验证翻转定位效果。未使用本地GPU。后续试验仍须先比较“低解码384、低解码放大512、原图细节512”的输入/吞吐，再决定训练，不能将放大带来的变化解释为细节收益。
+
+## 高细节局部微调试验入口（服务器真实检查待运行）
+
+新增detail_training.py，独立项目、分阶段执行，不改变已经导出的候选。局部从固定R27 raw epoch12初始化，权重及官方train清单固定SHA核验；全图和定位器保持冻结，定位器关闭TF32，重新计算完整train原图、valid原图/翻转ROI，避免复用旧TF32资产。train51396/1657阳性、valid5849/191阳性，test不进入训练/验证。仅保存几何JSONL，不缓存全量512图片。
+
+```bash
+python experiments/r27_single_flip/detail_training.py prepare \
+  --project /root/autodl-tmp/r27_detail512_pilot \
+  --materials-root /root/autodl-tmp/r27_materials_20261102 \
+  --data-root /root/autodl-tmp/glaucoma_first --max-hours 3
+# 以下只能在空闲的Linux CUDA服务器上执行，沿用/root/r16-roi-env环境：
+python experiments/r27_single_flip/detail_training.py assets --project /root/autodl-tmp/r27_detail512_pilot
+python experiments/r27_single_flip/detail_training.py benchmark --project /root/autodl-tmp/r27_detail512_pilot
+python experiments/r27_single_flip/detail_training.py smoke --project /root/autodl-tmp/r27_detail512_pilot
+# 检查基准和预算后才执行：
+python experiments/r27_single_flip/detail_training.py train --project /root/autodl-tmp/r27_detail512_pilot
+python experiments/r27_single_flip/detail_training.py evaluate --project /root/autodl-tmp/r27_detail512_pilot
+```
+
+assets可能需要一段时间；三小时从assets第一次启动开始计时，包含后续阶段及手动等待时间，prepare不开始计时。模型阶段的--max-hours不会重置预算。预算检查在批次边界执行，不能保证计时瞬间强制退出。超时状态为paused、退出码3；已完成epoch的last和之前选中的best保留，半轮last标记partial_epoch，不参与选择。**此试验不支持恢复训练或自动续跑**，暂停后不能直接重跑同名阶段，避免覆盖证据。预算不足会拒绝启动训练；正式上机前必须核对剩余预算。
+
+benchmark：相同固定880张train、每臂5批预热＋50批计时、batch16/4workers，三臂各重新加载相同父权重，执行真实前向/反向/AdamW；权重仅用于测量、不保存、不用于后续微调。报告有效AMP更新、显存峰值和每批耗时。只覆盖局部训练步骤，不能代替整轮或端到端延迟验收，缓存与执行次序会影响计时。可用新工程及--order detail512 low512 low384复测反序。
+
+smoke：16阴性＋16阳性小样本训练，验证实际更新、checkpoint保存/读回与两类双视图推理；不进行模型选择。训练必须先通过benchmark和smoke；按新细节512耗时估计3轮不超过剩余预算70%，才会启动。这个估计不保证实际能跑完。
+
+train：固定batch16、最多3轮，backbone lr3e-6、head lr3e-5、AdamW weight_decay1e-4，沿用阳性权重49739/1657以及原局部旋转/颜色增强。先完整评估同模型低解码384与高细节512第0轮，保留第0轮best；随后按融合后的翻转AUROC→AP选择最佳512权重，原图指标同时记录。每个完整epoch核验类别覆盖、必须有实际优化器更新，并保存last/optimizer/scaler；输入文件大小/mtime在后续阶段检查，不等价于所有JPEG逐文件密码学签名。
+
+evaluate：最佳512局部用B1重新评估完整valid双视图，使用冻结的全图logit及ROI资产。它仍不是实时全流程延迟验收。没有自动test导出，也不能将新的候选权重直接塞入固定原R27推理入口；如果候选优于原版，还需另做实时定位/裁剪一致性、端到端延迟和导出适配验收。
+
+本地3项入口CPU检查通过（准备无Torch、拒绝覆盖、完成标记篡改拒绝、Windows模型执行拒绝），4项裁剪检查回归通过。help/语法检查完成；**GPU资产生成、真实三路benchmark、smoke以及训练均尚未执行**，这些CPU检查不能代替服务器集成验收。运行前需打包新源码并在服务器新目录重新prepare，不覆盖旧候选目录。
