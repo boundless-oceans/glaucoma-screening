@@ -275,15 +275,20 @@ def main():
                 complete(out);return 0
             if args.stage=='smoke':
                 subset=[r for label in (0,1) for r in [x for x in train if x['label']==label][:16]]
-                model=fresh().train();opt=torch.optim.AdamW(model.parameters(),lr=3e-6);scaler=torch.amp.GradScaler('cuda')
-                updates=sum(int(train_step(model,b,opt,scaler,weight)[1]) for b in loader(Crops(subset,'detail512',True),16,0))
-                if not updates:raise ValueError('No successful smoke optimizer step')
+                model=fresh().train();opt=torch.optim.AdamW(model.parameters(),lr=3e-6);scaler=torch.amp.GradScaler('cuda',init_scale=8192.)
+                before=model.head[-1].weight.detach().clone();updates=0;attempts=0
+                for retry in range(8):
+                    for batch in loader(Crops(subset,'detail512',True),16,0):
+                        if time.monotonic()>deadline:raise TimeoutError('Smoke budget exhausted')
+                        updates+=int(train_step(model,batch,opt,scaler,weight)[1]);attempts+=1
+                    if updates:break
+                if not updates or torch.equal(before,model.head[-1].weight):raise ValueError('No actual smoke parameter change')
                 save_model(out/'smoke.pt',model,cfg,-1)
                 model.load_state_dict(torch.load(out/'smoke.pt',map_location='cpu',weights_only=True)['state_dict'],strict=True)
                 # Include both classes, both views; this is integration, not a score estimate.
                 ids=set(next(r['image_id'] for r in valid if r['label']==label) for label in (0,1))
                 evaluate(model,[r for r in valid if r['image_id'] in ids],'detail512',out,'smoke',1,0,deadline)
-                atomic_json(out/'report.json',dict(successful_updates=updates,no_real_model_selection=True));complete(out);return 0
+                atomic_json(out/'report.json',dict(successful_updates=updates,attempted_updates=attempts,head_changed=True,no_real_model_selection=True));complete(out);return 0
             if args.stage=='train':
                 require(project,'benchmark');require(project,'smoke')
                 bench=json.loads((project/'benchmark/report.json').read_text())['results']['detail512']
