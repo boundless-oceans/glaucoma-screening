@@ -293,3 +293,24 @@ python experiments/r27_single_flip/validate_detail_live.py evaluate --parallel \
   --materials-root /root/autodl-tmp/r27_materials_20261102 \
   --output-root /root/autodl-tmp/r27_parallel_new_validation
 ```
+
+
+### 定位优先调度原型（2026-11-04，暂不默认采用）
+
+scheduled_detail_adapter.py沿用省复制单线程解码，先运行定位器，得到ROI后将裁剪/pad512排入同一CPU工作线程；主线程同时运行全图分类，然后等待裁剪并执行局部分类。全图分类分数不参与ROI计算，因此可以重排。没有CUDA并发、额外分类前向或跨图片批处理；原分类/定位精度上下文和数值表达式保持，ROI、归一化、融合公式不变。独立background_crop上下文在主线程失败时先等待/取消裁剪再释放原图，返回前关闭裁剪图像。额外排队调度可能带来开销，不能保证所有机器提速。
+
+两项纯CPU检查通过：合成裁剪像素/映射与原实现一致、全图异常时等待并释放原图和裁剪，以及模型关键表达式/精度上下文对照。无本地Torch/GPU。benchmark_detail_parallel.py新增--scheduled和--baseline parallel-nocopy，支持直接对比上一版省复制调度。
+
+4090D固定128图×2次，交替两臂：旧省复制版平均113.04ms、p95为170.34ms；定位优先平均104.34ms、p95为168.62ms，平均减少7.70%，长尾改善有限。256次全图/局部分数、概率/标签、定位中心、ROI、物理裁剪框及RGB裁剪哈希完全相同；同一B1参考门限通过。未完成5849图或T4验收，仍超过100ms，不修改默认推理入口，也没有生成test提交。暂不为此有限收益重跑完整集；若后续继续验证，必须给独立策略身份、先check再evaluate，不能复用上一版完整报告。
+
+两份报告/trace完成标记与全部256条预测已本地核验。私有归档outputs/training_results/20261104_r27_scheduled，tar SHA256为e1d04e7ae3183ca78deb79f1a1edad839e12f3e3f654024b5d7653567bd1c549；代码包为未提交工作区快照，ZIP SHA256为b1281ea8fa6a50ccc2a6befa2cce60a1c7afc4cbb6b2cf85a8ed045d865546d7。运行后未修改原候选源码和权重。
+
+```bash
+python experiments/r27_single_flip/benchmark_detail_parallel.py cuda \
+  --baseline parallel-nocopy --scheduled \
+  --training-project /root/autodl-tmp/r27_detail512_pilot_20261103_v2 \
+  --materials-root /root/autodl-tmp/r27_materials_20261102 \
+  --data-root /root/autodl-tmp/glaucoma_first \
+  --output /root/autodl-tmp/r27_scheduled_new_benchmark \
+  --samples 128 --repeats 2
+```

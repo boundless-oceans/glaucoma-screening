@@ -33,7 +33,8 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--samples',type=int,default=32)
     p.add_argument('--repeats',type=int,default=3)
-    p.add_argument('--baseline',choices=('serial','parallel-copy'),default='serial')
+    p.add_argument('--baseline',choices=('serial','parallel-copy','parallel-nocopy'),default='serial')
+    p.add_argument('--scheduled',action='store_true',help='Test locator-first schedule instead of the existing parallel order')
     args=p.parse_args()
     if not 1<=args.samples<=128 or not 1<=args.repeats<=5:p.error('Use 1..128 samples and 1..5 repeats')
     if args.output.exists():p.error('New output directory required')
@@ -56,7 +57,7 @@ def main():
         row['path']=str(path)
     args.output.mkdir(parents=True)
     sys.path.insert(0,str(args.materials_root/'inference'))
-    report=dict(mode=args.mode,baseline=args.baseline,count=len(rows),repeats=args.repeats,assets_sha256=digest(asset),samples=[r['image_id'] for r in rows])
+    report=dict(mode=args.mode,baseline=args.baseline,scheduled=args.scheduled,count=len(rows),repeats=args.repeats,assets_sha256=digest(asset),samples=[r['image_id'] for r in rows])
     if args.mode=='cpu':
         from imaging import prepare_view
         measurements={'shared_decode_and_global_prepare':[],'full_jpeg_decode_crop_resize':[],'crop_hash':[]}
@@ -102,14 +103,19 @@ def main():
         from parallel_detail_adapter import predict_parallel
         from concurrent.futures import ThreadPoolExecutor
         pool=ThreadPoolExecutor(max_workers=1)
-        predict_profile=lambda engine,path,mirrored: predict_parallel(engine,path,pool,mirrored)
+        if args.scheduled:
+            from scheduled_detail_adapter import predict_scheduled
+        else:
+            predict_scheduled=predict_parallel
+        predict_profile=lambda engine,path,mirrored: predict_scheduled(engine,path,pool,mirrored)
         def baseline(engine,path,mirrored):
             if args.baseline=='serial':return predict_view(engine,path,mirrored)
+            if args.baseline=='parallel-nocopy':return predict_parallel(engine,path,pool,mirrored)
             # Calls wait for the only worker before returning, so the patch
             # never overlaps another prediction or an outstanding decode.
             from unittest.mock import patch
             with patch('parallel_decode.decode_original',decode_with_copy):
-                return predict_profile(engine,path,mirrored)
+                return predict_parallel(engine,path,pool,mirrored)
         for _ in range(2):
             baseline(engine,rows[0]['path'],True);predict_profile(engine,rows[0]['path'],True)
         measurements={};records=[];max_delta=0.
@@ -131,7 +137,7 @@ def main():
         pool.shutdown(wait=True)
         write_json(args.output/'trace.json',records)
         report.update(environment=env,statistics={k:stats(v) for k,v in measurements.items()},max_probability_delta=max_delta,
-                      scope='Selected baseline vs no-copy background full-JPEG decode; serial B1, no inter-image batching. Both include image cleanup. Not T4 acceptance.')
+                      scope='Selected baseline vs selected parallel scheduling policy; serial B1, no inter-image batching. Both include image cleanup. Not T4 acceptance.')
     report['source_sha256']={f.name:digest(f) for f in Path(__file__).parent.glob('*.py')}
     write_json(args.output/'report.json',report)
     write_json(args.output/'complete.json',{f.name:digest(f) for f in args.output.iterdir() if f.is_file()})
