@@ -245,3 +245,23 @@ test_detail_profile.py检查去掉计时语句后预测函数AST与实时预测�
 主要开销集中于两路图像解码/预处理，而非局部分类前向。下一步优先评估解码并行或更快JPEG实现，逐图核验裁剪像素、定位与概率后再测实际总耗时；将原图解码后resize替代JPEG draft会改变像素，不能直接当等价优化。删除诊断哈希仅能节约约1ms，无法独自解决100ms要求。目前尚未实施加速方案。
 
 本次计时与此前完整实时验证已下载到私有outputs/training_results/20261104_r27_detail_diagnostics，归档SHA256为458d900702e7e31412f1afc551cf457056bede9642415c7ad8a9ddb460340952；已核验计时、实时check、实时evaluate三个完成标记下共6份文件哈希。此前完整实时验证不再仅依赖用户粘贴日志，原始report和trace已本地保存。服务器诊断退出0，结束后未发现GPU计算进程。
+
+
+### 并行原图解码试验入口（2026-11-04）
+
+parallel_decode.py使用一个常驻ThreadPoolExecutor工作线程读取完整JPEG，EXIF/RGB处理与原版一致；在主线程全图draft解码、全图模型和定位运行期间提前解码。ROI产生后对已解码原图按相同坐标裁剪、镜像、pad512。线程不执行Torch或访问GPU；每张预测结束等待并关闭原图，不跨图排队，不预读下一张。额外保留一份完整RGB图，内存开销随输入尺寸增长。原detail_adapter.py/detail_crop.py及固定权重保持不变。
+
+parallel_detail_adapter.py为独立试验入口；外部调用者须创建并复用单工作线程池，在会话结束时shutdown。benchmark_detail_parallel.py沿用原资产/权重/源码哈希检查，交替对照串行与并行两臂，并核验裁剪RGB哈希、ROI和最终概率（≤1e-7），以及原B1参考。每图外层wall clock覆盖调用及线程清理；不计入模型加载、四次预热或线程池最终shutdown，不代表服务冷启动。CPU模式仅沿用预处理诊断，GPU两臂对照只在cuda模式运行。
+
+CPU三项检查通过：8种JPEG EXIF方向×双视图×正常/越界裁剪逐像素等价、异常路径等待并关闭解码图像、定位和分类关键表达式AST相同；本地无Torch导入/GPU使用。4090D首轮32图×3重复：串行平均153.70ms/p95为251.05ms，并行120.23ms/p95为181.90ms，同轮平均减少21.77%，96次概率差0、ROI/裁剪哈希一致。串行基线与前次132.90ms不同，跨次机器负载和缓存存在变化，不能将两次不同实验拼接计算提速。仍未达到100ms，未完成T4或全量验证，未接入正式导出。
+
+```bash
+/root/r16-roi-env/bin/python experiments/r27_single_flip/benchmark_detail_parallel.py cuda \
+  --training-project /root/autodl-tmp/r27_detail512_pilot_20261103_v2 \
+  --materials-root /root/autodl-tmp/r27_materials_20261102 \
+  --data-root /root/autodl-tmp/glaucoma_first \
+  --output /root/autodl-tmp/r27_parallel_new_benchmark \
+  --samples 128 --repeats 2
+```
+
+128图×2重复复核完成：串行平均153.02ms/p95为223.52ms，并行平均117.12ms/p95为172.68ms，同轮减少23.47%。256次原/并行全图logit、局部logit、最终概率、ROI与裁剪RGB哈希均完全一致。两轮归档已下载至私有outputs/training_results/20261104_r27_parallel_decode，tar SHA256为cb4ac9fa62b860bbea17bc4833a74d9e33a5b67b804831039304098809ff98bd；两个完成标记下4份文件哈希和全部352次预测对照已本地核验。仍只证明固定小样本等价，未做完整5849图验证，平均和p95均未满足100ms要求。
