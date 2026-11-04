@@ -1,0 +1,139 @@
+{
+  "schema": "experiment-catalog-v1",
+  "scope": "精选最终验证与平台候选，不是所有历史训练轮次；平台分数均来自用户反馈",
+  "entries": [
+    {
+      "id": "r27-captain",
+      "title": "队长原R27",
+      "report": null,
+      "metrics": null,
+      "guards": [],
+      "decision": "平台基线",
+      "reason": "平台98.56为用户反馈；此条不填未经独立对齐的本地指标",
+      "platform": {
+        "score": 98.56,
+        "source": "用户反馈；未独立读取平台回执"
+      },
+      "submission": null
+    },
+    {
+      "id": "r16-flip",
+      "title": "R16单次翻转",
+      "report": "20261030_r16_single_flip/project/outputs/single-valid_20261030_153908_709279/results.json",
+      "metrics": "metrics.single_flip",
+      "guards": [
+        [
+          "status",
+          "completed"
+        ],
+        [
+          "n",
+          5849
+        ]
+      ],
+      "decision": "保留历史候选",
+      "reason": "ROI来源与R27不同，不混同为同一架构对照",
+      "platform": {
+        "score": 98.55,
+        "source": "用户反馈；文件与平台回执关联未独立核验"
+      },
+      "submission": {
+        "path": "20261030_r16_single_flip/submission_single_flip.csv",
+        "sha256": "391d274414ed450430e6fc4f46a2e9d5313a2d78ab8f3b4625f4e3b6becf45ff"
+      }
+    },
+    {
+      "id": "r27-stable384",
+      "title": "R27稳定翻转384",
+      "report": "20261103_r27_stable_single_flip/r27_stable_candidate_20261103/evaluate/report.json",
+      "metrics": "flip",
+      "guards": [
+        [
+          "stage",
+          "evaluate"
+        ],
+        [
+          "count",
+          5849
+        ],
+        [
+          "baseline_gate.passed",
+          true
+        ]
+      ],
+      "decision": "未超过平台基线",
+      "reason": "平台98.53低于队长原版98.56",
+      "platform": {
+        "score": 98.53,
+        "source": "用户明确反馈本候选CSV；未独立读取平台回执"
+      },
+      "submission": {
+        "path": "20261103_r27_stable_single_flip/platform_submission/submission.csv",
+        "sha256": "a5849ab71cfbc1baa12764740310bbcc7d4a4d43d53d1568ed65dac761941ab7"
+      }
+    },
+    {
+      "id": "r27-detail512",
+      "title": "R27细节512 epoch3",
+      "report": "20261104_r27_parallel_live/r27_parallel_live_20261104/evaluate/report.json",
+      "metrics": "metrics.flip",
+      "guards": [
+        [
+          "passed",
+          true
+        ],
+        [
+          "count",
+          5849
+        ],
+        [
+          "identity.execution_policy",
+          "parallel-nocopy-v1"
+        ]
+      ],
+      "decision": "等待队长决定提交",
+      "reason": "本地小幅提升不稳健；完整4090D平均116.48ms，尚未通过时延验收",
+      "platform": null,
+      "submission": {
+        "path": "20261104_r27_detail512_submission/platform_submission/submission_r27_detail512.csv",
+        "sha256": "bbcd8f08e36a30d5e06ded16b220dce1b735554fcda64a48392f562fb8fc2862"
+      }
+    },
+    {
+      "id": "r16-ema",
+      "title": "R16局部EMA",
+      "report": "20261031_r16_local_ema/project/reports/R16-local-ema/results.json",
+      "metrics": "ema.metrics",
+      "guards": [
+        [
+          "local.status",
+          "completed"
+        ]
+      ],
+      "decision": "不采用",
+      "reason": "未超过原R16原图同机参考；不能与翻转候选直接归因比较",
+      "platform": null,
+      "submission": null
+    },
+    {
+      "id": "r16-weight-average",
+      "title": "R16局部参数平均50/50",
+      "report": "20261031_r16_local_weight_average/project/evaluation/report.json",
+      "metrics": "arms.candidate.metrics",
+      "guards": [
+        [
+          "stage",
+          "evaluate"
+        ],
+        [
+          "rows",
+          5849
+        ]
+      ],
+      "decision": "不采用",
+      "reason": "完整验证低于两个父参考，停止系数扫描",
+      "platform": null,
+      "submission": null
+    }
+  ]
+}

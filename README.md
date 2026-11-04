@@ -5,6 +5,16 @@
 正式训练在 AutoDL 执行；本地只编辑代码及运行轻量检查。
 遵循最新比赛通知，不使用医学类预训练权重。全图参考沿用官方train训练得到的最佳模型；新增局部分支从通用ImageNet权重初始化，分别记录实验。
 
+## 实验总表与离线汇总
+
+精选最终验证与已知平台结果见 [实验总表](experiments/RESULTS.md)，目录登记在 experiments/results_catalog.json。平台分数均来自用户反馈，缺失分数不视为0；脚本不自动选模、不加载权重。
+
+```bash
+python scripts/summarize_results.py --results-root /path/to/private/training_results --output outputs/new_summary
+```
+
+输出 summary.json 和 summary.md，核验报告完成门限、现有完成标记中的报告哈希及候选CSV身份。报告缺失时明确标缺失；未完成/错身份报告报错。此目录只登记六个关键最终结果，不声称包含全部历史训练；源档案和逐图数据留在私有结果目录，生成文件不入Git。
+
 ## 当前入口与验证状态
 
 |用途|入口|状态|
@@ -15,6 +25,8 @@
 |R16便携推理与端到端计时|experiments/r16_inference/|4090D两种视图35图predict及各5849图benchmark通过输出一致性检查；T4待测|
 |R16局部EMA同次训练对照|experiments/r16_local_ema/|工程check、15轮训练和完整B1验证完成；EMA略优于本轮普通版，未超过原版，不替换基线|
 |R16固定局部权重平均|experiments/r16_local_weight_average/|build/check/完整验证完成，AUROC 0.988944低于两父模型，不采用、不搜索比例|
+|R27原版与单次翻转配对验证|[experiments/r27_single_flip/](experiments/r27_single_flip/README.md)|仅定位器TF32关闭候选37图检查、完整验证和5855图导出通过；翻转AUROC0.990110，已下载核验，稳定384平台98.53；细节512候选已导出，全量延迟/T4未达标|
+|R27便携推理与T4计时|[experiments/r27_inference/](experiments/r27_inference/README.md)|三种模式4090D各256图运行完成，两个翻转模式历史概率/ROI/像素完全一致；T4待验收|
 |历史B0按融合指标选模|scripts/check_local_pipeline.py --fusion-selection|轻量逻辑检查通过，新增模式的真实模型训练集成仍待运行|
 
 2026-10-31阶段复查：根目录101项、R16配方7项、R16推理19项CPU检查，共127项通过。T4官方环境及单图100ms仍未验收，不能用4090D计时替代。R16使用独立的torch2.10/torchvision0.25环境；不要把旧train.sh、默认320px配置或旧conda环境套进R16入口。
@@ -139,11 +151,16 @@ R16角色清单现由prepare脚本从本地官方CSV生成，验证计数、阳�
     │   │   ├── src/                      # EMA参数更新及服务器集成检查
     │   │   ├── tests/                    # 不导入PyTorch的CPU契约检查
     │   │   └── README.md                 # 分阶段命令、对照及one-shot边界
-    │   └── r16_local_weight_average/     # 原局部与新EMA固定50/50参数平均
-    │       ├── scripts/                  # 纯文件准备及服务器build/check/evaluate
-    │       ├── src/r16_average/          # 兼容性、参数平均和独立原图验证
-    │       ├── tests/                    # 不加载模型的CPU契约检查
-    │       └── README.md                 # 固定范围、父模型复现保护和验收边界
+    │   ├── r16_local_weight_average/     # 原局部与新EMA固定50/50参数平均
+    │   │   ├── scripts/                  # 纯文件准备及服务器build/check/evaluate
+    │   │   ├── src/r16_average/          # 兼容性、参数平均和独立原图验证
+    │   │   ├── tests/                    # 不加载模型的CPU契约检查
+    │   │   └── README.md                 # 固定范围、父模型复现保护和验收边界
+    │   └── r27_single_flip/              # R27监督定位＋30% ROI，原图/单次翻转配对
+    │       ├── run.py                    # prepare/check/evaluate/显式export
+    │       ├── adapter.py                # 保留原版预测体，替换输入视图准备
+    │       ├── test_cpu.py               # 合成流程及原版源码/图像检查
+    │       └── README.md                 # 材料、运行步骤和结果边界
     ├── tests/                            # 自动化代码测试，不训练模型
     ├── docs/                             # 本地改进计划，Git 忽略，克隆后不自带
     ├── outputs/                          # 预处理预览等生成产物，不入 Git

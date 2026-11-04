@@ -1,0 +1,12 @@
+name: r27-inference
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - torch==2.10.0+cu128
+      - torchvision==0.25.0+cu128
+      - numpy==2.5.4
+      - pillow==12.3.0
+      - --extra-index-url https://download.pytorch.org/whl/cu128
