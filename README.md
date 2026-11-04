@@ -5,6 +5,16 @@
 正式训练在 AutoDL 执行；本地只编辑代码及运行轻量检查。
 遵循最新比赛通知，不使用医学类预训练权重。全图参考沿用官方train训练得到的最佳模型；新增局部分支从通用ImageNet权重初始化，分别记录实验。
 
+## 实验总表与离线汇总
+
+精选最终验证与已知平台结果见 [实验总表](experiments/RESULTS.md)，目录登记在 experiments/results_catalog.json。平台分数均来自用户反馈，缺失分数不视为0；脚本不自动选模、不加载权重。
+
+```bash
+python scripts/summarize_results.py --results-root /path/to/private/training_results --output outputs/new_summary
+```
+
+输出 summary.json 和 summary.md，核验报告完成门限、现有完成标记中的报告哈希及候选CSV身份。报告缺失时明确标缺失；未完成/错身份报告报错。此目录只登记六个关键最终结果，不声称包含全部历史训练；源档案和逐图数据留在私有结果目录，生成文件不入Git。
+
 ## 当前入口与验证状态
 
 |用途|入口|状态|
