@@ -61,3 +61,20 @@ python -u run.py benchmark --mode detail-flip512 \
 外层计时从GPU同步后开始，覆盖开JPEG/PNG、EXIF/RGB、翻转、全图预处理/分类、实时定位、ROI/局部分类和融合，以及现有诊断像素哈希及单图线程清理，结束时再GPU同步。不含模型加载、身份哈希、清单扫描、逐图trace/CSV写入、最后线程池shutdown；首次预测不等于清空OS缓存的冷盘测试。报告给出load/first、均值/p50/p95/p99/max、超过100ms数量、GPU/驱动/包版本/线程数、进程峰值RSS与CUDA峰值allocated/reserved、是否全覆盖、来源SHA和模型大小。official_acceptance始终false；hardware_is_t4和all_measured_under_or_equal_100ms仅描述本次实测，不猜测官方聚合口径。
 
 本地检查：python experiments/r27_inference/test_cpu.py。只检查打包身份、输入顺序/路径、统计契约、CLI隔离和失败保护。当前尚未完成此便携入口的服务器真实模型集成检查；旧实验入口的GPU成功记录不能直接代替新入口验收。
+
+
+## 2026-11-04便携包服务器集成检查
+
+bundle_v2在4090D独立目录/root/autodl-tmp/r27_portable_bundle_20261104组装，权重从已有固定材料按SHA复制，便携bundle.json身份与本地完全相同。运行时不使用训练工程或角色清单；外部仅提供官方valid图像/CSV和可选历史trace对照。三个模式在不同进程运行相同seed的256图，4次预热，显式--diagnostic。
+
+|模式|平均ms|p95 ms|最大ms|>100ms数量|复现范围|
+|---|---:|---:|---:|---:|---|
+|captain-original|70.24|90.77|116.91|5/256|仅独立运行检查，未声称复现队长历史概率|
+|stable-flip384|89.67|139.44|181.87|68/256|历史同机全量归档抽样256图严格通过|
+|detail-flip512|111.95|156.49|220.61|164/256|历史同机全量归档抽样256图严格通过|
+
+两个翻转模式概率最大差0，ROI及裁剪RGB哈希完全相同；下载后额外逐条核验全图/局部分数也完全一致。原版没有提供JSONL历史参考，reference.enabled=false不是复现成功。模型首次调用约7.29/9.01/9.12秒（原版/384/512），与稳态分开，不把初始化编译/预热排除后的数字称作冷启动时延。峰值GPU allocated约185/185/195MB，进程峰值RSS约1.87/1.89/2.15GB；不是完整T4资源验收。不同模式进程顺序和OS缓存不受控，不做严格速度优劣推断。
+
+三阶段完成标记和压缩包SHA已本地核验，独立CPU对照512条翻转记录，未使用本地GPU。私有归档outputs/training_results/20261104_r27_portable_check，tar SHA256为ce59f64c70b9909d3a8f873121cc82660be29376220da62e0e6abfcd6963b6d9，bundle.json SHA为f56a65d69ee476aaee3619455e28f7b28a1ef39065dc6041b40bd2dd666386f7。固定环境沿用/root/r16-roi-env/bin/python，没有新建YAML环境；YAML新建安装仍未实测。没有生成新的test提交、训练、平台上传或自动关机；结束时GPU无计算进程。
+
+下一步仍是真实T4固定小样本复现和完整计时。上述非T4/非全覆盖检查不能声称100ms或官方验收通过。无需为便携打包重复训练或再次全量生成已有CSV。
