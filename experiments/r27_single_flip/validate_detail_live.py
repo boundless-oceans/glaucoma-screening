@@ -18,6 +18,7 @@ def main():
     p.add_argument('--training-project',type=Path,required=True)
     p.add_argument('--materials-root',type=Path,required=True)
     p.add_argument('--output-root',type=Path,required=True)
+    p.add_argument('--parallel',action='store_true',help='Overlap full JPEG decode using one persistent CPU worker')
     args=p.parse_args()
     if sys.platform!='linux':p.error('Linux CUDA server required; local model execution disabled')
     import fcntl
@@ -25,6 +26,7 @@ def main():
     with (args.output_root/'.lock').open('a') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         train=args.training_project.resolve();out=args.output_root/args.stage;out.mkdir(exist_ok=False)
+        pool=None
         try:
             if subprocess.check_output(['nvidia-smi','--query-compute-apps=pid','--format=csv,noheader'],text=True).strip():raise RuntimeError('GPU occupied')
             verify_materials(args.materials_root)
@@ -45,6 +47,7 @@ def main():
             if len(rows)!=5849 or len(lookup)!=11698 or set(refs)!=set(lookup):raise ValueError('Role/ID mismatch')
             source={p.name:digest(p) for p in Path(__file__).parent.glob('*.py')}
             identity=dict(best_sha256=BEST_SHA,source=source,assets_sha256=digest(train/'assets/valid.jsonl'),reference_sha256=digest(train/'evaluate/best_b1.json'))
+            identity['execution_policy']='parallel-nocopy-v1' if args.parallel else 'serial-v1'
             if args.stage=='evaluate':
                 check=args.output_root/'check'
                 for name,sha in json.loads((check/'complete.json').read_text()).items():
@@ -61,6 +64,16 @@ def main():
             engine.local_model.load_state_dict(ck['state_dict'],strict=True)
             install_locator_policy(engine,torch)
             from detail_adapter import predict_view
+            if args.parallel:
+                from concurrent.futures import ThreadPoolExecutor
+                from parallel_detail_adapter import predict_parallel
+                pool=ThreadPoolExecutor(max_workers=1)
+                def predict_view(engine,path,mirrored):
+                    begin=time.perf_counter()
+                    result=predict_parallel(engine,path,pool,mirrored)
+                    # Outer timer includes background image cleanup on return.
+                    result['elapsed_ms']=1000*(time.perf_counter()-begin)
+                    return result
             load_seconds=time.perf_counter()-started
             if args.stage=='check':
                 selected={rows[i]['image_id'] for i in check_indices([dict(label=str(r['label'])) for r in rows])}|IDS
@@ -94,7 +107,7 @@ def main():
             report=dict(passed=passed,count=len(work),identity=identity,environment=env,checkpoint_load_seconds=load_seconds,
                 max_probability_delta=max_delta,max_global_logit_delta=max_global,roi_changes=box_changes,crop_changes=crop_changes,metrics=metrics,
                 latency_ms=dict(mean=float(np.mean(elapsed)),p50=float(np.percentile(elapsed,50)),p95=float(np.percentile(elapsed,95)),p99=float(np.percentile(elapsed,99)),max=max(elapsed),over_100ms=sum(v>100 for v in elapsed)),
-                timing_scope='Serial B1: draft shared decode + global + FP32 locator TF32-off + full JPEG decode/crop512 + local + synchronization; four warmups excluded. Diagnostic crop hash included. 4090D only, NOT T4 acceptance.')
+                timing_scope=('Serial B1; parallel full JPEG decode enabled. ' if args.parallel else 'Serial B1; sequential decode. ')+'Draft shared decode + global + FP32 locator TF32-off + full JPEG decode/crop512 + local + synchronization; four warmups excluded. Diagnostic crop hash and per-image cleanup included; model loading and final pool shutdown excluded. 4090D only, NOT T4 acceptance.')
             write_json(out/'report.json',report)
             if not passed:raise ValueError('Real-time/cache mismatch; retain evidence, do not relax automatically')
             if digest(best)!=BEST_SHA or source!={p.name:digest(p) for p in Path(__file__).parent.glob('*.py')}:raise ValueError('Input changed')
@@ -102,6 +115,8 @@ def main():
             print(json.dumps(report,allow_nan=False),flush=True)
         except BaseException:
             (out/'failed.txt').write_text(traceback.format_exc(),encoding='utf-8');raise
+        finally:
+            if pool is not None:pool.shutdown(wait=True)
 
 
 if __name__=='__main__':

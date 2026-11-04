@@ -5,12 +5,27 @@ from detail_crop import source_box
 
 
 def decode_original(path):
-    with Image.open(path) as opened:
-        image = ImageOps.exif_transpose(opened) if opened.getexif().get(274, 1) != 1 else opened
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        # copy forces full decoding and detaches pixels from the closed file.
-        return image.copy()
+    # Own the file independently of the returned image. load() materializes
+    # pixels before the stream closes, without copying the full RGB frame.
+    with open(path, 'rb') as stream:
+        opened = Image.open(stream)
+        image = opened
+        try:
+            if opened.getexif().get(274, 1) != 1:
+                image = ImageOps.exif_transpose(opened)
+            if image.mode != 'RGB':
+                converted = image.convert('RGB')
+                if image is not opened:
+                    image.close()
+                image = converted
+            image.load()
+        except BaseException:
+            image.close()
+            opened.close()
+            raise
+        if image is not opened:
+            opened.close()
+        return image
 
 
 @contextmanager

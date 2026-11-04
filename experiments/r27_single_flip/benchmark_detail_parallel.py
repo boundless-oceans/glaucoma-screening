@@ -10,6 +10,15 @@ from core import digest, verify_materials, write_json
 from detail_crop import prepare_detail
 
 
+def decode_with_copy(path):
+    """Previous parallel decoder, retained only as a paired benchmark arm."""
+    from PIL import Image, ImageOps
+    with Image.open(path) as opened:
+        image=ImageOps.exif_transpose(opened) if opened.getexif().get(274,1)!=1 else opened
+        if image.mode!='RGB':image=image.convert('RGB')
+        return image.copy()
+
+
 def stats(values):
     import numpy as np
     return dict(mean_ms=float(np.mean(values)),p50_ms=float(np.percentile(values,50)),p95_ms=float(np.percentile(values,95)))
@@ -24,6 +33,7 @@ def main():
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--samples',type=int,default=32)
     p.add_argument('--repeats',type=int,default=3)
+    p.add_argument('--baseline',choices=('serial','parallel-copy'),default='serial')
     args=p.parse_args()
     if not 1<=args.samples<=128 or not 1<=args.repeats<=5:p.error('Use 1..128 samples and 1..5 repeats')
     if args.output.exists():p.error('New output directory required')
@@ -46,7 +56,7 @@ def main():
         row['path']=str(path)
     args.output.mkdir(parents=True)
     sys.path.insert(0,str(args.materials_root/'inference'))
-    report=dict(mode=args.mode,count=len(rows),repeats=args.repeats,assets_sha256=digest(asset),samples=[r['image_id'] for r in rows])
+    report=dict(mode=args.mode,baseline=args.baseline,count=len(rows),repeats=args.repeats,assets_sha256=digest(asset),samples=[r['image_id'] for r in rows])
     if args.mode=='cpu':
         from imaging import prepare_view
         measurements={'shared_decode_and_global_prepare':[],'full_jpeg_decode_crop_resize':[],'crop_hash':[]}
@@ -93,15 +103,22 @@ def main():
         from concurrent.futures import ThreadPoolExecutor
         pool=ThreadPoolExecutor(max_workers=1)
         predict_profile=lambda engine,path,mirrored: predict_parallel(engine,path,pool,mirrored)
+        def baseline(engine,path,mirrored):
+            if args.baseline=='serial':return predict_view(engine,path,mirrored)
+            # Calls wait for the only worker before returning, so the patch
+            # never overlaps another prediction or an outstanding decode.
+            from unittest.mock import patch
+            with patch('parallel_decode.decode_original',decode_with_copy):
+                return predict_profile(engine,path,mirrored)
         for _ in range(2):
-            predict_view(engine,rows[0]['path'],True);predict_profile(engine,rows[0]['path'],True)
+            baseline(engine,rows[0]['path'],True);predict_profile(engine,rows[0]['path'],True)
         measurements={};records=[];max_delta=0.
         for row in rows:
             for repeat in range(args.repeats):
                 output={}
                 for arm in (('plain','profile') if repeat%2==0 else ('profile','plain')):
                     started=time.perf_counter()
-                    output[arm]=(predict_view if arm=='plain' else predict_profile)(engine,row['path'],True)
+                    output[arm]=(baseline if arm=='plain' else predict_profile)(engine,row['path'],True)
                     output[arm]['elapsed_ms']=1000*(time.perf_counter()-started)
                 a,b=output['plain'],output['profile'];delta=abs(a['probability']-b['probability']);max_delta=max(max_delta,delta)
                 if delta>1e-7 or a['crop_rgb_sha256']!=b['crop_rgb_sha256'] or a['roi_box']!=b['roi_box']:raise ValueError('Parallel decode changed prediction')
@@ -114,7 +131,7 @@ def main():
         pool.shutdown(wait=True)
         write_json(args.output/'trace.json',records)
         report.update(environment=env,statistics={k:stats(v) for k,v in measurements.items()},max_probability_delta=max_delta,
-                      scope='Serial B1 paired baseline vs one background full-JPEG decode worker; same per-image work, no inter-image batching. Not T4 acceptance.')
+                      scope='Selected baseline vs no-copy background full-JPEG decode; serial B1, no inter-image batching. Both include image cleanup. Not T4 acceptance.')
     report['source_sha256']={f.name:digest(f) for f in Path(__file__).parent.glob('*.py')}
     write_json(args.output/'report.json',report)
     write_json(args.output/'complete.json',{f.name:digest(f) for f in args.output.iterdir() if f.is_file()})

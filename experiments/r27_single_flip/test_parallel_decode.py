@@ -18,8 +18,10 @@ class DecodeTests(unittest.TestCase):
             image.save(stream,format='JPEG',exif=exif);data=stream.getvalue()
             real_open=Image.open
             def opened(_):return real_open(BytesIO(data))
-            with patch('parallel_decode.Image.open',side_effect=opened):
+            stream=BytesIO(data)
+            with patch('parallel_decode.open',return_value=stream):
                 decoded=decode_original('synthetic.jpg')
+            self.assertTrue(stream.closed)
             for mirrored in (False,True):
                 for box in ([1,2,20,25],[-6,-4,24,30]):
                     roi=dict(decoded_size=[32,32],original_size=list(decoded.size),roi_box=box)
@@ -29,6 +31,30 @@ class DecodeTests(unittest.TestCase):
                     self.assertEqual(ebox,abox)
                     self.assertEqual(expected.tobytes(),actual.tobytes())
             decoded.close()
+
+    def test_file_closed_on_decode_failure(self):
+        stream=BytesIO(b'not a JPEG')
+        with patch('parallel_decode.open',return_value=stream):
+            with self.assertRaises(OSError):
+                decode_original('broken.jpg')
+        self.assertTrue(stream.closed)
+
+    def test_rgb_avoids_full_copy_and_grayscale_converts(self):
+        for mode in ('RGB','L'):
+            stream=BytesIO()
+            Image.new(mode,(11,7)).save(stream,format='JPEG')
+            stream.seek(0)
+            with patch('parallel_decode.open',return_value=stream):
+                if mode=='RGB':
+                    with patch.object(Image.Image,'copy',side_effect=AssertionError('Full RGB copy')):
+                        image=decode_original('synthetic.jpg')
+                else:
+                    image=decode_original('synthetic.jpg')
+            self.assertTrue(stream.closed)
+            self.assertEqual(image.mode,'RGB')
+            self.assertEqual(image.size,(11,7))
+            self.assertEqual(image.getpixel((0,0)),(0,0,0))
+            image.close()
 
     def test_background_cleanup_on_exception(self):
         image=Image.new('RGB',(8,8))

@@ -265,3 +265,31 @@ CPU三项检查通过：8种JPEG EXIF方向×双视图×正常/越界裁剪逐�
 ```
 
 128图×2重复复核完成：串行平均153.02ms/p95为223.52ms，并行平均117.12ms/p95为172.68ms，同轮减少23.47%。256次原/并行全图logit、局部logit、最终概率、ROI与裁剪RGB哈希均完全一致。两轮归档已下载至私有outputs/training_results/20261104_r27_parallel_decode，tar SHA256为cb4ac9fa62b860bbea17bc4833a74d9e33a5b67b804831039304098809ff98bd；两个完成标记下4份文件哈希和全部352次预测对照已本地核验。仍只证明固定小样本等价，未做完整5849图验证，平均和p95均未满足100ms要求。
+
+
+### 省去完整RGB复制与全量验证入口（2026-11-04）
+
+parallel_decode.py改用独立二进制文件上下文和Image.load()，先完整解码再关闭文件，返回拥有像素的图像对象；普通RGB/方向1不再调用整图copy()。EXIF变换及必要RGB转换保留，异常关闭图像及文件，预测结束关闭返回图像。不是改用JPEG draft，不改变采样像素。CPU五项检查通过，包括8种EXIF方向/双视图/越界补黑像素等价、文件关闭后图像仍可用、损坏文件清理、RGB路径禁止copy()、灰度转RGB及模型关键表达式一致。
+
+benchmark_detail_parallel.py新增--baseline parallel-copy，保留上一版解码实现作直接对照。4090D同轮128图×2次：上一版并行平均103.94ms/p95为171.71ms，省复制版平均93.50ms/p95为132.88ms，平均减少约10.05%，概率差0。不同轮服务器负载/缓存变化较大，不能将前一轮117.12ms与本轮93.50ms直接作为此改动收益。低于100ms的只是小样本均值，不构成单图或T4验收。
+
+validate_detail_live.py新增默认关闭的--parallel选项。固定同一epoch3权重和预处理资产，使用单工作线程，计时覆盖每张推理调用及返回时图像清理。check/evaluate身份中固定execution_policy，禁止复用另一策略的check；工作线程池在成功/失败路径均关闭。原串行默认保持。完整检查必须用新的output-root先check再evaluate；三份固定候选预处理源码哈希和best.pt SHA门限保持不变。全量5849图翻转验证已启动，结果待归档确认；未生成test CSV。
+
+
+完整省复制并行验证已完成，check 74次与evaluate 5849张均退出0。全量翻转AUROC0.990293593466324、AP0.8803755447338498，与原串行细节512候选完全相同。完整延迟平均116.48ms、p50为105.83ms、p95为176.01ms、p99为197.00ms，3682/5849张超过100ms。前次串行完整集平均133.43ms/p95为217.96ms，跨日负载及缓存不受控，不能把两次差异严格归因于代码；同轮128图省复制对照的收益单独保留。小样本93.50ms不代表全量表现，本候选仍未通过速度/T4验收。
+
+完整归档outputs/training_results/20261104_r27_parallel_live已下载；tar SHA256为2cb40278567d118d12f9dede4955fc9dcc0f2269205c3ed68c2a522860225e19。check/evaluate完成标记哈希核验通过；本地独立逐项比较新旧5849张串行/并行记录：ID及顺序、全图/局部分数、最终概率/标签、ROI、原图/解码尺寸、物理source_box及全部裁剪RGB哈希均完全相同。由此补上了全量裁剪像素身份对照；它不是全图跨GPU验收。128图新旧并行对照的完成标记与256次记录也已下载核验。私有归档LOCAL_VERIFICATION.json记录全量结论，本地未加载权重或导入Torch。
+
+建议保留此像素等价优化，但暂不视为部署完成。后续性能工作仍需单独实验；不因小幅valid提升而放宽100ms门槛。当前未生成细节512候选test CSV。
+
+```bash
+# 在同一源码目录按顺序运行；OUTPUT必须为新目录，第二条只在check成功后运行。
+python experiments/r27_single_flip/validate_detail_live.py check --parallel \
+  --training-project /root/autodl-tmp/r27_detail512_pilot_20261103_v2 \
+  --materials-root /root/autodl-tmp/r27_materials_20261102 \
+  --output-root /root/autodl-tmp/r27_parallel_new_validation
+python experiments/r27_single_flip/validate_detail_live.py evaluate --parallel \
+  --training-project /root/autodl-tmp/r27_detail512_pilot_20261103_v2 \
+  --materials-root /root/autodl-tmp/r27_materials_20261102 \
+  --output-root /root/autodl-tmp/r27_parallel_new_validation
+```
