@@ -314,3 +314,30 @@ python experiments/r27_single_flip/benchmark_detail_parallel.py cuda \
   --output /root/autodl-tmp/r27_scheduled_new_benchmark \
   --samples 128 --repeats 2
 ```
+
+
+### 固定细节512测试集导出（2026-11-04）
+
+export_detail.py提供prepare/export两阶段。固定epoch3局部best.pt SHA为3172d1858e4382019d5abb705aad618c7c5e6a0c06d123e74bfa103932e30c52；固定已通过的省复制并行完整验证report SHA为1916aef70c538e96e2e46cd5499a98a9d87721b8c6550186f2e3063052303beb，策略parallel-nocopy-v1。核验验证完成标记和七个实际推理依赖源码哈希，只接受此前全量通过的实现，不使用定位优先调度原型。父全图/定位器权重和队长实现仍由materials_sha256.json固定。
+
+prepare不导入Torch或加载模型，核验全部材料与验证证据、测试清单5855行无标签/角色/唯一ID/路径、源码和测试文件尺寸/mtime，写新项目身份。export仅Linux CUDA，拒绝被占用GPU，使用prepare固定路径和原顺序，前后检查材料/权重/源码/数据身份。两项CPU入口检查通过，本地实际证据门限核验通过且未导入Torch。初次服务器入口因适配器在make_engine初始化队长模块路径之前导入而失败，未预测test；已修正导入顺序，原失败目录保留，新目录_v2重新prepare。
+
+正式test前精确重放此前74条固定valid双视图记录，概率、全图/局部分数、ROI、source_box和裁剪RGB哈希均相同才继续。已通过重放，5855张test导出运行中；与训练/阈值选择无关。输出trace逐图落盘，结束后才写CSV及report/complete。CSV列沿用Image_name,Probability,Pred_Label，概率17位有效数字，阈值0.5，禁止把无标签test计算成测试AUROC。不接入scheduled_detail_adapter，不训练、不提交平台。
+
+此导出只用于候选评分；验证平均116.48ms/p95176.01ms（4090D）尚未达到100ms/T4验收，报告明确latency_accepted=false，不能据此宣称部署完成。失败/未完成输出不应提交，必须等完成标记并独立核验完整CSV。
+
+```bash
+python experiments/r27_single_flip/export_detail.py prepare \
+  --project /root/autodl-tmp/r27_detail512_new_export \
+  --training-project /root/autodl-tmp/r27_detail512_pilot_20261103_v2 \
+  --validation-project /root/autodl-tmp/r27_parallel_live_20261104 \
+  --materials-root /root/autodl-tmp/r27_materials_20261102 \
+  --data-root /root/autodl-tmp/glaucoma_first
+python experiments/r27_single_flip/export_detail.py export \
+  --project /root/autodl-tmp/r27_detail512_new_export
+```
+
+
+测试集导出已完成（成功目录/root/autodl-tmp/r27_detail512_export_20261104_v2），退出0，5855张耗时653.57秒，74条固定valid重放全部精确相同。CSV列/原序/唯一ID/有限连续概率及0.5标签与全部trace逐项核验通过，阳性289。提交文件私有outputs/training_results/20261104_r27_detail512_submission/platform_submission/submission_r27_detail512.csv，SHA256为bbcd8f08e36a30d5e06ded16b220dce1b735554fcda64a48392f562fb8fc2862。尚未提交平台，无test标签，不能计算test AUROC，也未通过100ms/T4验收。
+
+完整导出归档tar SHA256为97d1ef4d7509325b8a51591da3f893896d7ccbc9b3c4b75d5a76a6b8af57e673，已本地核验归档和完成标记文件；成功源码ZIP（工作区快照，SHA256 8da1c5287c1cecb3797b5ef285b8c1dc03152b254ee02c957ef45ac0e251cc65）保留在结果目录，全部Python源码与project.json身份一致。CSV和私有trace不加入Git。
