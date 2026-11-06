@@ -101,11 +101,13 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--init-checkpoint", type=Path)
+    parser.add_argument("--roi-cache", type=Path)
     parser.add_argument("--baseline-tolerance", type=float, default=0.00001,
                         help="Explicit source AUROC/AUPRC reproduction tolerance; default 1e-5")
     parser.add_argument("--device", choices=["cuda", "cpu"], default="cuda", help="Evaluation device")
     parser.add_argument("--splits", nargs="+", choices=["valid", "test"], default=["valid", "test"])
     parser.add_argument("--jpeg-draft-size", type=int, help="Validation-only experimental decoder override")
+    parser.add_argument("--fusion-reference-evaluation", type=Path)
     args = parser.parse_args()
     if not math.isfinite(args.max_hours) or args.max_hours < 0:
         parser.error("--max-hours must be finite and nonnegative")
@@ -117,6 +119,8 @@ def main():
         parser.error("Invalid batch-size/workers")
     if args.smoke and args.config:
         parser.error("Choose --smoke OR --config")
+    if args.fusion_reference_evaluation and args.mode != "train":
+        parser.error("--fusion-reference-evaluation is for training only")
     if args.init_checkpoint and args.mode != "train":
         parser.error("--init-checkpoint is for training only")
     if args.jpeg_draft_size is not None and (args.mode != "test" or set(args.splits) != {"valid"}):
@@ -140,11 +144,12 @@ def main():
         validate_config(resolved_config)
         sampled = any(resolved_config[k] for k in ("train_limit", "valid_limit", "test_limit"))
         profile_model = resolved_config["model_name"]
-        run = (run or CODE / "runs" / default_run_name(profile_model, sampled, resolved_config["remove_black_border"], resolved_config["finetune"], resolved_config["jpeg_draft_size"])).resolve()
+        run = (run or CODE / "runs" / (default_run_name(profile_model, sampled, resolved_config["remove_black_border"], resolved_config["finetune"], resolved_config["jpeg_draft_size"], resolved_config["use_age"], resolved_config["input_view"]) + ("_fusionselect" if args.fusion_reference_evaluation else ""))).resolve()
         state.update(run_dir=str(run), model_profile=profile_model, config_path=str(config))
         write_status(status_path, state)
         write_status(session.directory / "effective_config.json", resolved_config)
         session.log(f"Model profile: {profile_model}; run directory: {run}")
+        session.log(f"Input view: {resolved_config['input_view']}; age input: {resolved_config['use_age']}")
         session.log(f"Black-border removal: {resolved_config['remove_black_border']}; "
                     f"threshold={resolved_config['black_border_threshold']}, margin={resolved_config['black_border_margin']}")
         versions = {}
@@ -177,6 +182,10 @@ def main():
                         "--baseline-tolerance", str(args.baseline_tolerance)]
             if args.init_checkpoint:
                 command.extend(["--init-checkpoint", str(args.init_checkpoint.resolve())])
+            if args.roi_cache:
+                command.extend(["--roi-cache", str(args.roi_cache.resolve())])
+            if args.fusion_reference_evaluation:
+                command.extend(["--fusion-reference-evaluation", str(args.fusion_reference_evaluation.resolve())])
             child_code = session.run("training", command, accepted_codes=(0, 3, 130))
             progress_path = run / "progress.json"
             if progress_path.is_file():
@@ -205,8 +214,10 @@ def main():
                        "--checkpoint", str(checkpoint), "--output-dir", str(output), "--threshold", str(args.threshold),
                        "--batch-size", str(args.batch_size), "--workers", str(args.workers),
                        "--device", args.device, "--splits", *args.splits]
-            if args.smoke:
+            if sampled:
                 command.append("--allow-sample")
+            if args.roi_cache:
+                command.extend(["--roi-cache", str(args.roi_cache.resolve())])
             if args.jpeg_draft_size is not None:
                 command.extend(["--jpeg-draft-size", str(args.jpeg_draft_size)])
             session.run("evaluation and prediction", command)

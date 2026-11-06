@@ -15,6 +15,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--roi-cache", type=Path)
     args = parser.parse_args()
     predict_checkpoint(args.checkpoint, args.data_root, args.output, args.device,
-                       args.batch_size, args.workers, args.threshold)
+                       args.batch_size, args.workers, args.threshold, roi_cache=args.roi_cache)

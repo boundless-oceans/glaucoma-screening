@@ -5,7 +5,21 @@ from pathlib import Path
 from . import CONFIG_DIR
 from .preprocess_config import preprocessing_options
 
-SUPPORTED_MODELS = ("resnet18", "efficientnet_b2")
+SUPPORTED_MODELS = ("resnet18", "efficientnet_b2", "efficientnet_b0")
+
+
+def uses_age(config):
+    value = config.get("use_age", True)
+    if type(value) is not bool:
+        raise ValueError("use_age must be true or false")
+    return value
+
+
+def input_view(config):
+    value = config.get("input_view", "global")
+    if value not in ("global", "local"):
+        raise ValueError("input_view must be global or local")
+    return value
 
 
 def model_name_from_config(config):
@@ -26,10 +40,17 @@ def checkpoint_model_name(state):
 
 def canonical_config(config):
     return {**config, "model_name": model_name_from_config(config), **preprocessing_options(config),
-            "finetune": config.get("finetune", False)}
+            "finetune": config.get("finetune", False), "use_age": uses_age(config), "input_view": input_view(config)}
 
 
-def default_run_name(model_name, smoke=False, remove_black_border=False, finetune=False, jpeg_draft_size=0):
+def default_run_name(model_name, smoke=False, remove_black_border=False, finetune=False, jpeg_draft_size=0,
+                     use_age=True, input_view="global"):
+    if input_view not in ("global", "local"):
+        raise ValueError("Invalid input_view")
+    if input_view == "local":
+        return default_run_name(model_name, smoke, remove_black_border, finetune, jpeg_draft_size, use_age) + "_local"
+    if not uses_age({"use_age": use_age}):
+        return default_run_name(model_name, smoke, remove_black_border, finetune, jpeg_draft_size) + "_imageonly"
     preprocessing_options({"jpeg_draft_size": jpeg_draft_size})
     if jpeg_draft_size:
         return default_run_name(model_name, smoke, remove_black_border, finetune) + f"_draft{jpeg_draft_size}"
@@ -50,6 +71,8 @@ def load_config(path=None):
         raise ValueError("Config must be a JSON object")
     defaults.setdefault("finetune", False)
     defaults.setdefault("jpeg_draft_size", 0)
+    defaults.setdefault("use_age", True)
+    defaults.setdefault("input_view", "global")
     unknown = set(overrides) - set(defaults)
     if unknown:
         raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")

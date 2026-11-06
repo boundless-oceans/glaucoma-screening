@@ -1,4 +1,4 @@
-"""Configurable image backbone + age training with portable checkpoints."""
+"""Configurable global/local image training with optional age and portable checkpoints."""
 import argparse
 import csv
 from datetime import datetime, timezone
@@ -23,6 +23,8 @@ from .common import (FusionModel, FundusDataset, atomic_save, data_signature, ev
 from .run_utils import RunLock, protect_output, validate_config
 from .model_config import canonical_config, checkpoint_model_name, default_run_name, load_config
 from .finetune import validate_source, verify_baseline, reconcile_best
+from .roi_cache import load_roi_cache, cache_rows, snapshot_roi_cache
+from .fusion_selection import FusionSelection, publish_alias
 
 
 def main():
@@ -36,6 +38,8 @@ def main():
     parser.add_argument("--skip-predict", action="store_true")
     parser.add_argument("--init-checkpoint", type=Path, help="Load model weights only into a NEW fine-tuning run")
     parser.add_argument("--baseline-tolerance", type=float, default=0.00001)
+    parser.add_argument("--roi-cache", type=Path)
+    parser.add_argument("--fusion-reference-evaluation", type=Path, help="Completed frozen global validation directory; local training only")
     args = parser.parse_args()
     if not math.isfinite(args.max_hours) or args.max_hours < 0:
         parser.error("--max-hours must be finite and nonnegative")
@@ -57,9 +61,11 @@ def main():
         torch.cuda.manual_seed_all(config["seed"])
         torch.backends.cudnn.benchmark = False
     sampled = any(config[k] for k in ("train_limit", "valid_limit", "test_limit"))
+    if args.fusion_reference_evaluation and config["input_view"] != "local":
+        parser.error("Fusion selection requires a local image-only configuration")
     root = args.data_root.resolve()
-    run = (args.run_dir or PROJECT_ROOT / "runs" / default_run_name(
-        config["model_name"], sampled, config["remove_black_border"], config["finetune"], config["jpeg_draft_size"])).resolve()
+    run = (args.run_dir or PROJECT_ROOT / "runs" / (default_run_name(
+        config["model_name"], sampled, config["remove_black_border"], config["finetune"], config["jpeg_draft_size"], config["use_age"], config["input_view"]) + ("_fusionselect" if args.fusion_reference_evaluation else ""))).resolve()
     try:
         protect_output(root, run, directory=True)
     except ValueError as error:
@@ -79,11 +85,24 @@ def main():
     # Catch incomplete uploads before downloading weights or training for hours.
     test_rows = read_rows(root, "test")
     print(f"Preflight paths OK: train={len(full_train)}, valid={len(valid_rows)}, test={len(test_rows)}", flush=True)
-    del test_rows
     for split, rows in (("train", train_rows), ("valid", valid_rows)):
         if {r["True_Label"] for r in rows} != {"0", "1"}:
             raise ValueError(f"{split} must include both classes")
     state = torch.load(last, map_location="cpu", weights_only=True) if last.exists() else None
+    if state and args.fusion_reference_evaluation and not state.get("fusion_selection"):
+        raise ValueError("Cannot add fusion selection to an old run; use a new run directory")
+    cache = None
+    if config["input_view"] == "local":
+        if state and not state.get("roi_cache_signature"):
+            raise ValueError("Local checkpoint lacks ROI cache signature")
+        cache_directory = args.roi_cache or run / "roi_cache"
+        cache = load_roi_cache(root, cache_directory, state.get("roi_cache_signature") if state else None)
+        cache_rows(cache, "train", train_rows); cache_rows(cache, "valid", valid_rows)
+        cache_rows(cache, "test", subset(test_rows, config["test_limit"], config["seed"]))
+    elif args.roi_cache is not None:
+        raise ValueError("Global training does not use --roi-cache")
+    cache_signature = cache["signature"] if cache else None
+    del test_rows
     source, initialization = None, state.get("initialization") if state else None
     if config["finetune"]:
         if state:
@@ -109,13 +128,20 @@ def main():
             raise ValueError("Dataset CSV files differ from checkpoint")
         if state["best_metrics"] is not None and not (run / "best.pt").is_file():
             raise FileNotFoundError("best.pt is missing. Restore it together with last.pt before resuming.")
-        if config["finetune"] and state["best_metrics"] is not None:
+        if (config["finetune"] or state.get("fusion_selection")) and state["best_metrics"] is not None:
             recovered = reconcile_best(run, state)
             if recovered["best_score"] != state["best_score"]:
                 print("Recovered newer committed best metrics; training resumes from last.pt.", flush=True)
             state = recovered
+    selection = None
+    if args.fusion_reference_evaluation or (state and state.get("fusion_selection")):
+        selection = FusionSelection(run, args.fusion_reference_evaluation, signature, valid_rows,
+                                    state.get("fusion_selection") if state else None, sampled)
+        if (run / "best.pt").is_file():
+            publish_alias(run / "best.pt", run / "best_local.pt")
     age = state["age_stats"] if state else source["age_stats"] if source else fit_age(train_rows)
-    model = FusionModel(pretrained=config["pretrained"] and state is None and source is None, model_name=config["model_name"]).to(device)
+    model = FusionModel(pretrained=config["pretrained"] and state is None and source is None,
+                        model_name=config["model_name"], use_age=config["use_age"]).to(device)
     if source:
         model.load_state_dict(source["model"], strict=True)
         del source
@@ -142,6 +168,7 @@ def main():
                cuda=torch.version.cuda, platform=platform.platform(), device=str(device),
                gpu=torch.cuda.get_device_name(0) if device.type == "cuda" else None)
     env["model_name"] = config["model_name"]
+    env.update(use_age=config["use_age"], input_view=config["input_view"], roi_cache_signature=cache_signature)
     env["remove_black_border"] = config["remove_black_border"]
     print(json.dumps(env, indent=2), flush=True)
     print(f"Samples: train={len(train_rows)}, valid={len(valid_rows)}; age stats: {age}", flush=True)
@@ -161,16 +188,20 @@ def main():
     def save(status="training"):
         atomic_save(dict(format_version=2, model_name=config["model_name"], model=model.state_dict(), optimizer=optimizer.state_dict(),
                          scaler=scaler.state_dict(), config=config, age_stats=age, data_signature=signature,
+                         roi_cache_signature=cache_signature,
                          epoch=epoch, next_batch=next_batch, global_step=global_step,
                          loss_sum=loss_sum, seen=seen, best_score=list(best_score), best_metrics=best_metrics,
                          initialization=initialization, baseline_ready=baseline_ready,
+                         fusion_selection=selection.state() if selection else None,
                          torch_rng=torch.get_rng_state(),
                          cuda_rng=torch.cuda.get_rng_state_all() if device.type == "cuda" else []), last)
         json_save(run / "progress.json", dict(status=status, updated_utc=datetime.now(timezone.utc).isoformat(),
                   epoch_index=epoch, next_batch=next_batch, global_step=global_step,
                   model_name=config["model_name"],
+                  use_age=config["use_age"], input_view=config["input_view"], roi_cache_signature=cache_signature,
                   remove_black_border=config["remove_black_border"],
                   total_epochs=config["epochs"], best_metrics=best_metrics,
+                  fusion_selection=selection.state() if selection else None,
                   stop_reason=("user_signal" if stop["requested"] else "time_budget") if status == "paused" else None))
         print(f"Checkpoint saved: {last}; status={status}, epoch_index={epoch}, "
               f"next_batch={next_batch}, global_step={global_step}", flush=True)
@@ -178,10 +209,15 @@ def main():
     # Create a recoverable state before writing metadata or starting the first batch.
     if state is None:
         save("initialized")
+    if selection:
+        selection.snapshot()
+    if cache:
+        snapshot_roi_cache(cache_directory, run / "roi_cache", cache_signature)
     json_save(run / "environment.json", env)
     json_save(run / "config.json", config)
     json_save(run / "age_stats.json", age)
-    valid_dataset = FundusDataset(valid_rows, age, config["image_size"], preprocessing=config)
+    valid_dataset = FundusDataset(valid_rows, age, config["image_size"], preprocessing=config,
+                                  roi_records=cache_rows(cache, "valid", valid_rows) if cache else None)
     valid_loader = make_loader(valid_dataset, config["batch_size"], config["num_workers"], device=device)
 
     def save_best(names, probabilities, labels, result):
@@ -191,6 +227,7 @@ def main():
         marker.unlink(missing_ok=True)
         atomic_save(dict(format_version=2, model_name=config["model_name"], model=model.state_dict(),
                          config=config, age_stats=age, data_signature=signature, epoch=result["epoch"],
+                         roi_cache_signature=cache_signature,
                          best_metrics=result, initialization=initialization), run / "best.pt")
         write_predictions(run / "valid_predictions.csv", names, probabilities, labels=labels)
         json_save(run / "best_metrics.json", result)
@@ -201,6 +238,9 @@ def main():
         json_save(marker, dict(status="completed", epoch=result["epoch"], initialization=initialization,
                                files={name: hashlib.sha256((run / name).read_bytes()).hexdigest()
                                       for name in ("best.pt", "valid_predictions.csv", "best_metrics.json", "valid_thresholds.csv")}))
+
+        if selection:
+            publish_alias(run / "best.pt", run / "best_local.pt")
 
     if config["finetune"] and not baseline_ready:
         print("Validating source model BEFORE any optimizer step...", flush=True)
@@ -226,7 +266,8 @@ def main():
         save("initialized")
         print("Source model preserved as epoch-0 best: " + json.dumps(baseline), flush=True)
     while epoch < config["epochs"]:
-        dataset = FundusDataset(train_rows, age, config["image_size"], True, config["seed"], epoch, preprocessing=config)
+        dataset = FundusDataset(train_rows, age, config["image_size"], True, config["seed"], epoch, preprocessing=config,
+                                 roi_records=cache_rows(cache, "train", train_rows) if cache else None)
         order = torch.randperm(len(dataset), generator=torch.Generator().manual_seed(config["seed"] + epoch)).tolist()
         batches = math.ceil(len(dataset) / config["batch_size"])
         offset = next_batch * config["batch_size"]
@@ -276,6 +317,12 @@ def main():
             best_score, best_metrics = score, result
             save_best(names, probabilities, labels, result)
             print("New best checkpoint saved.", flush=True)
+        if selection:
+            checkpoint = dict(format_version=2, model_name=config["model_name"], model=model.state_dict(),
+                              config=config, age_stats=age, data_signature=signature, epoch=result["epoch"],
+                              roi_cache_signature=cache_signature, best_metrics=dict(result), initialization=initialization)
+            result["fusion"] = selection.record(names, probabilities, labels, dict(result), checkpoint, atomic_save)
+            print("Fixed fusion validation: " + json.dumps(result["fusion"]), flush=True)
         with (run / "history.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(result, allow_nan=False) + "\n")
         print(json.dumps(result), flush=True)
@@ -296,7 +343,8 @@ def main():
     if not args.skip_predict:
         filename = "DEBUG_predictions.csv" if sampled else "submission.csv"
         predict_checkpoint(run / "best.pt", root, run / filename, args.device,
-                           config["batch_size"], config["num_workers"], allow_sample=sampled)
+                           config["batch_size"], config["num_workers"], allow_sample=sampled,
+                           roi_cache=run / "roi_cache" if cache else None)
     print(f"Training complete. Best validation metrics: {best_metrics}", flush=True)
 
 

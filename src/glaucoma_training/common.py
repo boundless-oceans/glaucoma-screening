@@ -7,10 +7,12 @@ import torch
 from PIL import Image, ImageEnhance, ImageOps
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
-from torchvision.models import resnet18, ResNet18_Weights, efficientnet_b2, EfficientNet_B2_Weights
+from torchvision.models import (resnet18, ResNet18_Weights, efficientnet_b2, EfficientNet_B2_Weights,
+                                efficientnet_b0, EfficientNet_B0_Weights)
 from torchvision.transforms.functional import to_tensor, normalize
 from .run_utils import protect_output
-from .model_config import checkpoint_model_name, model_name_from_config
+from .model_config import checkpoint_model_name, model_name_from_config, uses_age, input_view
+from .roi_cache import load_roi_cache, cache_rows, prepare_cached_image
 from .preprocess_config import preprocessing_options
 from .preprocessing import prepare_image
 from .data_utils import (read_rows, age_value, fit_age, subset, metrics,
@@ -18,10 +20,11 @@ from .data_utils import (read_rows, age_value, fit_age, subset, metrics,
 
 
 class FundusDataset(Dataset):
-    def __init__(self, rows, age, size, training=False, seed=42, epoch=0, preprocessing=None):
+    def __init__(self, rows, age, size, training=False, seed=42, epoch=0, preprocessing=None, roi_records=None):
         self.rows, self.age, self.size = rows, age, size
         self.training, self.seed, self.epoch = training, seed, epoch
         self.preprocessing = preprocessing_options(preprocessing or {})
+        self.roi_records = roi_records
 
     def __len__(self):
         return len(self.rows)
@@ -29,8 +32,12 @@ class FundusDataset(Dataset):
     def __getitem__(self, index):
         row = self.rows[index]
         try:
-            with Image.open(row["path"]) as source:
-                image, _ = prepare_image(source, self.size, self.preprocessing)
+            if self.roi_records is not None:
+                image = prepare_cached_image(Path(row["path"]).read_bytes(),
+                    self.roi_records[row["Image_name"].casefold()], self.size, self.preprocessing["jpeg_draft_size"])
+            else:
+                with Image.open(row["path"]) as source:
+                    image, _ = prepare_image(source, self.size, self.preprocessing)
             if self.training:
                 # Per-image/epoch seed makes worker prefetch and mid-epoch resume safe.
                 rng = random.Random(self.seed + self.epoch * 1000003 + index * 9176)
@@ -51,21 +58,26 @@ class FundusDataset(Dataset):
 
 
 class FusionModel(nn.Module):
-    def __init__(self, pretrained=False, model_name="resnet18"):
+    def __init__(self, pretrained=False, model_name="resnet18", use_age=True):
         super().__init__()
+        self.use_age = uses_age({"use_age": use_age})
         self.model_name = model_name_from_config({"model_name": model_name})
         if self.model_name == "resnet18":
             self.backbone = resnet18(weights=ResNet18_Weights.DEFAULT if pretrained else None)
             features = self.backbone.fc.in_features
             self.backbone.fc = nn.Identity()
         else:
-            self.backbone = efficientnet_b2(weights=EfficientNet_B2_Weights.DEFAULT if pretrained else None)
+            factory, weights = (efficientnet_b0, EfficientNet_B0_Weights) if self.model_name == "efficientnet_b0" else (efficientnet_b2, EfficientNet_B2_Weights)
+            self.backbone = factory(weights=weights.DEFAULT if pretrained else None)
             features = self.backbone.classifier[-1].in_features
             self.backbone.classifier = nn.Identity()
-        self.head = nn.Sequential(nn.Linear(features + 2, 128), nn.ReLU(), nn.Dropout(0.2), nn.Linear(128, 1))
+        self.head = nn.Sequential(nn.Linear(features + (2 if self.use_age else 0), 128), nn.ReLU(), nn.Dropout(0.2), nn.Linear(128, 1))
 
     def forward(self, image, age):
-        return self.head(torch.cat([self.backbone(image), age], dim=1)).squeeze(1)
+        features = self.backbone(image)
+        if self.use_age:
+            features = torch.cat([features, age], dim=1)
+        return self.head(features).squeeze(1)
 
 
 def make_loader(dataset, batch_size, workers, order=None, seed=42, device=None):
@@ -101,7 +113,7 @@ def evaluate(model, loader, device, amp=False):
 
 
 def predict_checkpoint(checkpoint, root, output, device="cuda", batch_size=32, workers=4,
-                       threshold=0.5, allow_sample=False):
+                       threshold=0.5, allow_sample=False, roi_cache=None):
     if not 0 <= threshold <= 1:
         raise ValueError("Threshold must be within [0, 1]")
     device = torch.device(device)
@@ -122,9 +134,16 @@ def predict_checkpoint(checkpoint, root, output, device="cuda", batch_size=32, w
         rows = subset(rows, config.get("test_limit", 0), config["seed"])
     if data_signature(root) != state["data_signature"]:
         raise ValueError("CSV data differs from the checkpoint; use the original dataset")
-    model = FusionModel(model_name=model_name).to(device)
+    cache = None
+    if input_view(config) == "local":
+        if not state.get("roi_cache_signature"): raise ValueError("Local checkpoint lacks ROI cache signature")
+        cache = load_roi_cache(root, roi_cache or Path(checkpoint).parent / "roi_cache", state["roi_cache_signature"])
+    elif roi_cache is not None:
+        raise ValueError("Global prediction does not use --roi-cache")
+    model = FusionModel(model_name=model_name, use_age=uses_age(config)).to(device)
     model.load_state_dict(state["model"])
-    dataset = FundusDataset(rows, state["age_stats"], config["image_size"], preprocessing=config)
+    dataset = FundusDataset(rows, state["age_stats"], config["image_size"], preprocessing=config,
+                            roi_records=cache_rows(cache, "test", rows) if cache else None)
     loader = make_loader(dataset, batch_size, workers, device=device)
     names, probabilities, _ = evaluate(model, loader, device, config["amp"])
     if names != [r["Image_name"] for r in rows]:
@@ -135,6 +154,7 @@ def predict_checkpoint(checkpoint, root, output, device="cuda", batch_size=32, w
     json_save(str(output) + ".json", dict(checkpoint=str(Path(checkpoint).resolve()),
               checkpoint_epoch=state["epoch"], threshold=threshold, rows=len(names),
               model_name=model_name,
+              use_age=uses_age(config), input_view=input_view(config), roi_cache_signature=state.get("roi_cache_signature"),
               preprocessing=preprocessing_options(config),
               sampled=allow_sample and any(config.get(k, 0) for k in ("train_limit", "valid_limit", "test_limit")),
               validation=state.get("best_metrics")))

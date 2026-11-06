@@ -3,11 +3,14 @@ import atexit
 import math
 import os
 from pathlib import Path
-from .model_config import model_name_from_config
+from .model_config import model_name_from_config, uses_age, input_view
 from .preprocess_config import preprocessing_options
 
 
 def validate_config(config):
+    uses_age(config)
+    if input_view(config) == "local" and (uses_age(config) or config.get("finetune", False)):
+        raise ValueError("Local experiments require use_age=false and finetune=false")
     if type(config.get("finetune", False)) is not bool:
         raise ValueError("finetune must be true or false")
     model_name_from_config(config)

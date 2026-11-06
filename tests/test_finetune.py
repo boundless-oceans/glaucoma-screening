@@ -57,7 +57,7 @@ class FinetuneChecks(unittest.TestCase):
     def test_source_preprocessing_and_loss_are_preserved(self):
         for key, value in [("image_size", 384), ("remove_black_border", False),
                            ("black_border_threshold", 10), ("black_border_margin", 0.1),
-                           ("pos_weight", 2), ("amp", False)]:
+                           ("pos_weight", 2), ("amp", False), ("use_age", False), ("input_view", "local")]:
             config = {**self.config, key: value}
             with self.assertRaises(ValueError): self.check(config=config)
 

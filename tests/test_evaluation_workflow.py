@@ -14,13 +14,29 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from glaucoma_training.data_utils import data_signature, json_save, metrics, read_rows, subset, write_predictions
-from glaucoma_training.model_config import checkpoint_model_name, load_config
+from glaucoma_training.model_config import checkpoint_model_name, load_config, uses_age, input_view
 from glaucoma_training.preprocess_config import preprocessing_options
 from glaucoma_training.run_utils import protect_output
+from glaucoma_training import launch
 
 
 class EvaluationWorkflowChecks(unittest.TestCase):
-    def exercise(self, splits, draft_size=None):
+    def test_local_launcher_cache_and_sample_arguments(self):
+        for config, sampled in (("local_b0.json", False), ("local_b0_smoke.json", True)):
+            with tempfile.TemporaryDirectory() as temporary:
+                folder = Path(temporary); commands = []
+                def fake_run(session, title, command, **kwargs):
+                    if title == "evaluation and prediction": commands.append(command)
+                    return 0
+                argv = ["launch", "test", "--config", str(ROOT/"configs"/config), "--roi-cache", str(folder/"cache")]
+                with patch.object(launch, "CODE", folder), patch.object(sys, "argv", argv), \
+                        patch.object(launch.signal, "signal"), patch.object(launch.LoggedSession, "run", fake_run):
+                    self.assertEqual(launch.main(), 0)
+                self.assertEqual("--allow-sample" in commands[0], sampled)
+                self.assertEqual(commands[0][commands[0].index("--roi-cache")+1], str((folder/"cache").resolve()))
+                self.assertIn("_imageonly_local", commands[0][commands[0].index("--checkpoint")+1])
+
+    def exercise(self, splits, draft_size=None, local=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             data = root / "data"
@@ -34,6 +50,9 @@ class EvaluationWorkflowChecks(unittest.TestCase):
             checkpoint.write_bytes(b"checkpoint-snapshot")
             state = dict(config=load_config(), model_name="efficientnet_b2", model={}, age_stats={},
                          epoch=5, best_metrics={"auroc": 0.98}, data_signature=data_signature(data))
+            if local:
+                state["config"].update(input_view="local", use_age=False)
+                state["roi_cache_signature"] = "fixed-cache"
             cuda = Mock()
             cuda.is_available.return_value = False
             cuda.get_device_name.side_effect = AssertionError("CPU path accessed GPU name")
@@ -54,6 +73,8 @@ class EvaluationWorkflowChecks(unittest.TestCase):
             namespace = dict(argparse=argparse, Path=Path, datetime=datetime, timezone=timezone,
                              hashlib=hashlib, json=json, torch=framework, protect_output=protect_output,
                              checkpoint_model_name=checkpoint_model_name, data_signature=data_signature,
+                             uses_age=uses_age, input_view=input_view,
+                             load_roi_cache=lambda *a:dict(signature="fixed-cache"), cache_rows=lambda *a:dict(example=True),
                              FusionModel=lambda **k: model, preprocessing_options=preprocessing_options,
                              json_save=json_save, read_rows=read_rows, subset=subset, metrics=metrics,
                              write_predictions=write_predictions, evaluate=fake_evaluate,
@@ -65,9 +86,14 @@ class EvaluationWorkflowChecks(unittest.TestCase):
                     "--output-dir", str(output), "--device", "cpu", "--splits", *splits]
             if draft_size is not None:
                 argv.extend(["--jpeg-draft-size", str(draft_size)])
+            if local: argv.extend(["--roi-cache", str(root/"cache")])
             with patch.object(sys, "argv", argv):
                 namespace["main"]()
             manifest = json.loads((output / "manifest.json").read_text())
+            if local:
+                self.assertFalse(manifest["use_age"])
+                self.assertEqual(manifest["input_view"], "local")
+                self.assertEqual(manifest["roi_cache_signature"], "fixed-cache")
             self.assertEqual(manifest["checkpoint_sha256"], hashlib.sha256(checkpoint.read_bytes()).hexdigest())
             self.assertIsNone(manifest["gpu"])
             self.assertEqual(len(seen), len(set(splits)))
@@ -79,6 +105,8 @@ class EvaluationWorkflowChecks(unittest.TestCase):
             else:
                 self.assertFalse((output / "submission.csv").exists())
             self.assertEqual((output / "validation_metrics.json").exists(), "valid" in splits)
+            if "valid" in splits:
+                self.assertEqual(manifest["validation_sha256"], hashlib.sha256((output / "validation_predictions.csv").read_bytes()).hexdigest())
             self.assertEqual(manifest["status"], "completed")
             self.assertEqual(manifest["experimental_decoder_override"], draft_size is not None)
             if draft_size is not None:
@@ -87,6 +115,9 @@ class EvaluationWorkflowChecks(unittest.TestCase):
 
     def test_cpu_test_only_provenance(self):
         self.exercise(["test"])
+
+    def test_cached_local_cpu_evaluation(self):
+        self.exercise(["valid", "test"], local=True)
 
     def test_cpu_validation_only(self):
         self.exercise(["valid"])
